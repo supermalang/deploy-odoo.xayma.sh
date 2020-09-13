@@ -1,0 +1,4 @@
+---
+# handlers file for deploy-odoo
+- name: restart_nginx_service
+  shell: docker container exec {{ nginx.servicename_long | quote }} nginx -s reload

@@ -1,0 +1,5 @@
+---
+credentials:
+    admin_password: "X@yma5H!"
+    postgres_password: "{{'X@yma5H!'|hash('md5')}}"
+    postgres_user: "xaymash"

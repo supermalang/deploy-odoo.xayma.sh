@@ -1,0 +1,7 @@
+---
+# tasks file for deploy-odoo
+- import_tasks: deploy-odoo.yml
+  tags: deployodoo
+
+- import_tasks: add-vhost.yml
+  tags: deployodoo

@@ -1,0 +1,41 @@
+---
+
+- name: Creating the Odoo instance directory
+  file:
+    path: "{{ xayma_odoo_paths.instance }}"
+    state: directory
+    mode: '0755'
+
+- name: Creating the Odoo logs directory
+  file:
+    path: "{{ xayma_odoo_paths.logs }}"
+    state: directory
+    mode: '0755'
+
+- name: Creating the Odoo config directory
+  file:
+    path: "{{ xayma_odoo_paths.config }}"
+    state: directory
+    mode: '0755'
+
+- name: Creating Odoo config file
+  template:
+    src: odoo.conf.j2
+    dest: "{{ xayma_odoo_paths.config }}/odoo.conf"
+    mode: '0644'
+
+- name: Deleting comments in the configuration file
+  lineinfile:
+    path: "{{ xayma_odoo_paths.config }}/odoo.conf"
+    state: absent
+    regexp: "^[ #\\r\\n]"
+
+- name: Creating Docker compose file
+  template:
+    src: docker-compose.yml.j2
+    dest: "{{ xayma_odoo_paths.instance }}/docker-compose.yml"
+    mode: '0644'
+
+- name: Deploying the Odoo instance
+  docker_compose:
+    project_src: "{{ xayma_odoo_paths.instance }}"

@@ -1,0 +1,12 @@
+---
+
+- name: Creating vHost file
+  template:
+    src: reverse-proxy.conf.j2
+    dest: "{{ nginx.config_volume }}/{{xayma_odoo.instancename}}.conf"
+    mode: '0644'
+  notify:
+      - restart_nginx_service
+
+
+  
