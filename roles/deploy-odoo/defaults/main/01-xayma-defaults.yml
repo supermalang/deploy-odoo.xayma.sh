@@ -1,0 +1,19 @@
+---
+# [BEGINING OF XAYMA DEFAULTS]
+# These are the default variables to integrate this role with the Xayma Platform
+xayma:
+    username: xayma
+    domainname: xayma-solutions.com
+    frontend: xayma_webservers
+
+xayma_paths:
+    services: "/home/{{xayma.username}}/services"
+
+nginx:
+    name: nginx
+    version: latest
+    servicename: reverseproxy
+    servicename_long: 0__nginx_reverseproxy
+    config_volume: "{{ xayma_paths.services }}/0__nginx/conf.d"
+    service_path: "{{ xayma_paths.services }}/0__nginx"
+# [END OF XAYMA DEFAULTS]

@@ -2,8 +2,8 @@
 version: '2'
 services:
   web:
-    image: {{xayma_odoo.name}}:{{xayma_odoo.version}}
-    container_name: {{xayma_odoo.organization}}_{{xayma_odoo.instancename}}_odoo{{xayma_odoo.version|int}}
+    image: {{_name}}:{{version}}
+    container_name: {{fullinstancename}}
     networks:
       - frontend
       - default
@@ -11,24 +11,24 @@ services:
         - db
     restart: unless-stopped
     volumes:
-        - vol_{{xayma_odoo.instancename}}_addons:/opt/{{xayma_odoo.instancename}}_odoo{{xayma_odoo.version|int}}/extra-addons
+        - vol_{{fullinstancename}}_addons:/opt/{{instancename}}_odoo{{version|int}}/extra-addons
         - {{xayma_odoo_paths.config}}/odoo.conf:/etc/odoo/odoo.conf
-        - {{xayma_odoo_paths.logs}}:/opt/{{xayma_odoo.instancename}}_odoo{{xayma_odoo.version|int}}/logs
+        - {{xayma_odoo_paths.logs}}:/opt/{{instancename}}_odoo{{version|int}}/logs
       
   db:
     image: postgres:10
-    container_name: {{xayma_odoo.organization}}_{{xayma_odoo.instancename}}_postgres10
+    container_name: {{fullinstancename_db}}
     environment:
       - POSTGRES_DB=xayma
       - POSTGRES_PASSWORD={{credentials.postgres_password}}
       - POSTGRES_USER={{credentials.postgres_user}}
       - PGDATA=/var/lib/postgresql/data/pgdata
     volumes:
-      - vol_{{xayma_odoo.instancename}}_pgdata:/var/lib/postgresql/data/pgdata
+      - vol_{{fullinstancename}}_pgdata:/var/lib/postgresql/data/pgdata
 
 volumes:
-  vol_{{xayma_odoo.instancename}}_pgdata:
-  vol_{{xayma_odoo.instancename}}_addons:
+  vol_{{fullinstancename}}_pgdata:
+  vol_{{fullinstancename}}_addons:
 
 
 networks:

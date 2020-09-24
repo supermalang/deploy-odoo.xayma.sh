@@ -1,18 +1,18 @@
   
-# Configuration du reverse proxy pour l'instance {{ xayma_odoo.instancename }}
-upstream {{ xayma_odoo.instancename }} {
-    server {{xayma_odoo.organization}}_{{xayma_odoo.instancename}}_odoo{{xayma_odoo.version|int}}:8069 ;
+# Configuration du reverse proxy pour l'instance {{ instancename }}
+upstream {{ instancename }} {
+    server {{fullinstancename}}:8069 ;
 }
 
 server {
-    listen    80;
-    server_name {{ xayma_odoo.instancename }}.{{xayma.domainname}} {{ xayma_odoo.domains|join(' ') }};
+    listen 80;
+    server_name {{ domains|join(' ') }};
 
     location / {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-NginX-Proxy true;
-        proxy_pass http://{{xayma_odoo.instancename}}; # Prend le même nom que le upstream
+        proxy_pass http://{{instancename}}; # Prend le même nom que le upstream
         proxy_ssl_session_reuse off;
         proxy_set_header Host $http_host;
         proxy_cache_bypass $http_upgrade;

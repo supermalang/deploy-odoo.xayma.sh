@@ -5,3 +5,9 @@
 
 - import_tasks: add-vhost.yml
   tags: deployodoo
+
+- import_tasks: stop-instance.yml
+  tags: stopinstance, restartinstance, suspendinstance
+
+- import_tasks: start-instance.yml
+  tags: startinstance, restartinstance

@@ -1,5 +1,25 @@
 ---
-credentials:
-    admin_password: "X@yma5H!"
-    postgres_password: "{{'X@yma5H!'|hash('md5')}}"
-    postgres_user: "xaymash"
+
+organization: "{{ xayma_odoo.organization }}"
+instancename: "{{ xayma_odoo.instancename }}"
+version: "{{ xayma_odoo.version }}"
+_name: "{{ xayma_odoo.name }}"
+fullinstancename: "{{organization}}_{{instancename}}_odoo{{version|default(xayma_odoo.version)|int}}"
+fullinstancename_db: "{{organization}}_{{instancename}}_postgres"
+defaultdomain: "{{instancename}}.{{xayma.domainname}}"
+
+domains:
+    - "{{ domain|default(instancename) }}"
+    - "{{defaultdomain}}"
+    - "www.{{ domain|default(instancename) }}"
+    - "www.{{defaultdomain}}"
+
+
+xayma_odoo_paths:
+    instance: "/home/{{xayma.username}}/services/{{organization}}/{{instancename}}_odoo{{version}}"
+    config: "/home/{{xayma.username}}/services/{{organization}}/{{instancename}}_odoo{{version}}/config/"
+    logs: "/home/{{xayma.username}}/services/{{organization}}/{{instancename}}_odoo{{version}}/logs/"
+
+    
+# TODO
+# Create a variable name 'instanceame_with_id'

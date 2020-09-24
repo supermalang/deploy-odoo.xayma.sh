@@ -1,0 +1,7 @@
+---
+- name: Stoping Odoo instance
+  docker_compose:
+    project_src: "{{ xayma_odoo_paths.instance }}"
+    state: absent
+  when: instancename != xayma_odoo.instancename # We make sure the user has provided an instance name
+  

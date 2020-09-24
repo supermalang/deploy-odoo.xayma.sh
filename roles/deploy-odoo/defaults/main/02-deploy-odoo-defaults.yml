@@ -1,0 +1,7 @@
+---
+    
+xayma_odoo:
+    name: odoo
+    organization: "xayma"
+    instancename: "xayma_odoo"
+    version: "11.0"
