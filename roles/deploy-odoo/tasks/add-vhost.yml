@@ -6,7 +6,7 @@
     dest: "{{ nginx.config_volume }}/{{ fullinstancename }}.conf"
     mode: '0644'
   notify:
-      - restart_nginx_service
+      - reload_nginx_service
 
 
   
