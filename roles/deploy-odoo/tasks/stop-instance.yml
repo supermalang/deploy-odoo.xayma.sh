@@ -4,4 +4,12 @@
     project_src: "{{ xayma_odoo_paths.instance }}"
     state: absent
   when: instancename != xayma_odoo.instancename # We make sure the user has provided an instance name
-  
+
+
+- name: Updating the Nginx vHost file
+  template:
+    src: reverse-proxy-stop-site.conf.j2
+    dest: "{{ nginx.config_volume }}/{{ fullinstancename }}.conf"
+    mode: '0644'
+  notify:
+      - reload_nginx_service

@@ -1,8 +1,15 @@
 ---
-
 - name: Starting Odoo instance
   docker_compose:
     project_src: "{{ xayma_odoo_paths.instance }}"
     state: present
   when: instancename != xayma_odoo.instancename # We make sure the user has provided an instance name
-      
+
+
+- name: Updating the Nginx vHost file
+  template:
+    src: reverse-proxy.conf.j2
+    dest: "{{ nginx.config_volume }}/{{ fullinstancename }}.conf"
+    mode: '0644'
+  notify:
+      - reload_nginx_service
