@@ -9,6 +9,9 @@ xayma:
 xayma_paths:
     services: "/home/{{xayma.username}}/services"
 
+xaymash_app:
+    addons_volume: vol_addons
+
 nginx:
     name: nginx
     version: latest
