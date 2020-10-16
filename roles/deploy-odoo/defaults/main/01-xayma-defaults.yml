@@ -10,7 +10,7 @@ xayma_paths:
     services: "/home/{{xayma.username}}/services"
 
 xaymash_app:
-    addons_volume: vol_addons
+    addons_volume: 0__vol_addons
 
 nginx:
     name: nginx

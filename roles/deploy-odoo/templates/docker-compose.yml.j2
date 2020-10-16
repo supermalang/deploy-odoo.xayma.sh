@@ -29,6 +29,7 @@ services:
 volumes:
   vol_{{fullinstancename}}_pgdata:
   {{ xaymash_app.addons_volume }}:
+    external: true
 
 
 networks:
