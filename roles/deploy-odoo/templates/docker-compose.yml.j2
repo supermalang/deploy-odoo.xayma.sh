@@ -24,10 +24,10 @@ services:
       - POSTGRES_USER={{credentials.postgres_user}}
       - PGDATA=/var/lib/postgresql/data/pgdata
     volumes:
-      - vol_{{fullinstancename}}_pgdata:/var/lib/postgresql/data/pgdata
+      - pgdata:/var/lib/postgresql/data/pgdata
 
 volumes:
-  vol_{{fullinstancename}}_pgdata:
+  pgdata:
   {{ xaymash_app.addons_volume }}:
     external: true
 
