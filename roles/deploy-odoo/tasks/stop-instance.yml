@@ -9,7 +9,7 @@
 - name: Updating the Nginx vHost file
   template:
     src: reverse-proxy-stop-site.conf.j2
-    dest: "{{ nginx.config_volume }}/{{ fullinstancename }}.conf"
+    dest: "{{ nginx_config_volume_path }}/{{ fullinstancename }}.conf"
     mode: '0644'
   notify:
       - reload_nginx_service

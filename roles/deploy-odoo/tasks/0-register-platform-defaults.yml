@@ -1,0 +1,50 @@
+---
+
+- name: Registering the platform domain
+  shell: "grep platform_domain /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
+  register: _platform_domain
+- set_fact:
+    platform_domain: "{{ _platform_domain.stdout }}"
+
+
+- name: Registering the xayma app domain
+  shell: "grep xayma_app_domain /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
+  register: _xayma_app_domain
+- set_fact:
+    xayma_app_domain: "{{ _xayma_app_domain.stdout }}"
+
+- name: Registering the awx domain
+  shell: "grep awx_domain /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
+  register: _awx_domain
+- set_fact:
+    awx_domain: "{{ _awx_domain.stdout }}"
+
+- name: Registering the front network
+  shell: "grep front_network /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
+  register: _front_network
+- set_fact:
+    front_network: "{{ _front_network.stdout }}"
+
+- name: Registering the service path
+  shell: "grep services_path /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
+  register: _services_path
+- set_fact:
+    services_path: "{{ _services_path.stdout }}"
+
+- name: Registering the addons volume
+  shell: "grep addons_volume /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
+  register: _addons_volume
+- set_fact:
+    addons_volume: "{{ _addons_volume.stdout }}"
+
+- name: Registering the nginx container name
+  shell: "grep nginx_container_name /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
+  register: _nginx_container_name
+- set_fact:
+    nginx_container_name: "{{ _nginx_container_name.stdout }}"
+
+- name: Registering the nginx config volume path
+  shell: "grep nginx_config_volume_path /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
+  register: _nginx_config_volume_path
+- set_fact:
+    nginx_config_volume_path: "{{ _nginx_config_volume_path.stdout }}"

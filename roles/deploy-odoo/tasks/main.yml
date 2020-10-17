@@ -1,5 +1,8 @@
 ---
 # tasks file for deploy-odoo
+- import_tasks: 0-register-platform-defaults.yml
+  tags: deployodoo, stopinstance, restartinstance, suspendinstance, startinstance
+
 - import_tasks: deploy-odoo.yml
   tags: deployodoo
 

@@ -11,7 +11,7 @@ services:
         - db
     restart: unless-stopped
     volumes:
-        - {{ xaymash_app.addons_volume }}:/opt/extra-addons
+        - {{ addons_volume }}:/opt/extra-addons
         - {{xayma_odoo_paths.config}}/odoo.conf:/etc/odoo/odoo.conf
         - {{xayma_odoo_paths.logs}}:/opt/{{instancename}}_odoo{{version|int}}/logs
       
@@ -28,12 +28,11 @@ services:
 
 volumes:
   pgdata:
-  {{ xaymash_app.addons_volume }}:
+  {{ addons_volume }}:
     external: true
-
 
 networks:
   frontend:
     external:
-      name: {{ xayma.frontend }}
+      name: {{ front_network }}
     

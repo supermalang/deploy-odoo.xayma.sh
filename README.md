@@ -1,8 +1,8 @@
-Role Name
+Deploy-Odoo
 =========
 
 ```bash
-ansible-playbook site.yml -i production --tags "deployodoo" --extra-vars "organization=alima instancename=layla version=13.0 domain=bonjour.com"
+ansible-playbook site.yml -i production --tags "deployodoo" --extra-vars "organization=visibilite instancename=poc version=12.0 domain=babilie.com"
 ```
 
 A brief description of the role goes here.

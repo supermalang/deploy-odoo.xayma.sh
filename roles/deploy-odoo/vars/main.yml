@@ -3,22 +3,21 @@
 organization: "{{ xayma_odoo.organization }}"
 instancename: "{{ xayma_odoo.instancename }}"
 version: "{{ xayma_odoo.version }}"
+domain: "{{ instancename }}"
 _name: "{{ xayma_odoo.name }}"
 fullinstancename: "{{organization}}_{{instancename}}_odoo{{version|default(xayma_odoo.version)|int}}"
 fullinstancename_db: "{{organization}}_{{instancename}}_postgres"
-defaultdomain: "{{instancename}}.{{xayma.domainname}}"
+defaultdomain: "{{platform_domain}}"
 
 domains:
-    - "{{ domain|default(instancename) }}"
-    - "{{defaultdomain}}"
-    - "www.{{ domain|default(instancename) }}"
-    - "www.{{defaultdomain}}"
-
+    - "{{ domain }}"
+    - "www.{{ domain }}"
+    - "{{instancename}}.{{ defaultdomain }}"
 
 xayma_odoo_paths:
-    instance: "/home/{{xayma.username}}/services/{{organization}}/{{instancename}}_odoo{{version}}"
-    config: "/home/{{xayma.username}}/services/{{organization}}/{{instancename}}_odoo{{version}}/config/"
-    logs: "/home/{{xayma.username}}/services/{{organization}}/{{instancename}}_odoo{{version}}/logs/"
+    instance: "{{services_path}}/{{organization}}/{{instancename}}_odoo{{version|int}}"
+    config: "{{services_path}}/{{organization}}/{{instancename}}_odoo{{version|int}}/config/"
+    logs: "{{services_path}}/{{organization}}/{{instancename}}_odoo{{version|int}}/logs/"
 
     
 # TODO
