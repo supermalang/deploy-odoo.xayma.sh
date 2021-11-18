@@ -1,7 +1,7 @@
 ---
 # tasks file for deploy-odoo
 - import_tasks: 0-register-platform-defaults.yml
-  tags: deployodoo, stopinstance, restartinstance, suspendinstance, startinstance
+  tags: deployodoo, stopinstance, restartinstance, suspendinstance, startinstance, editinstancedomainname
 
 - import_tasks: deploy-odoo.yml
   tags: deployodoo
@@ -14,3 +14,6 @@
 
 - import_tasks: start-instance.yml
   tags: startinstance, restartinstance
+
+- import_tasks: edit-instance-domainname.yml
+  tags: editinstancedomainname

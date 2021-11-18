@@ -1,0 +1,12 @@
+---
+- name: Updating the Nginx vHost file
+  template:
+    src: reverse-proxy.conf.j2
+    dest: "{{ nginx_config_volume_path }}/{{ fullinstancename }}.conf"
+    mode: '0644'
+  notify:
+      - reload_nginx_service
+  when: instancename != xayma_odoo.instancename and ( organization != "" or organization != xayma_odoo.organization ) and instancename != domain  
+  # We make sure the user has provided an instance name 
+  # and he has provided an organization
+  # and the new domain name for that instance
