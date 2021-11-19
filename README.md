@@ -9,6 +9,8 @@ However if you want to use command create and manage odoo instances from the com
 ansible-playbook site.yml -i production --tags "deployodoo" --extra-vars "organization=xaymasolutions instancename=portal domain=portal.xaymasolutions.com" --vault-pass-file "vault_password" -K
 ```
 
+> You need to know that when using the CLI way, the instance's addon folder will not be created by default and it might lead to some errors. In that situation you will need to create the addon folder manually.
+
 
 Requirements
 ------------
