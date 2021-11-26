@@ -19,7 +19,7 @@ services:
     image: postgres:10.4
     container_name: {{fullinstancename_db}}
     environment:
-      - POSTGRES_DB={{ instancename }}
+      - POSTGRES_DB=xayma # For some reason when you put instance name the DB is not initialized. So xayma will be the postgres superuser used to initialize the odoo DB
       - POSTGRES_PASSWORD={{credentials.postgres_password}}
       - POSTGRES_USER={{credentials.postgres_user}}
       - PGDATA=/var/lib/postgresql/data/pgdata
