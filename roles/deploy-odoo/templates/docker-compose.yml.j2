@@ -16,12 +16,12 @@ services:
         - {{xayma_odoo_paths.logs}}:/opt/{{instancename}}_odoo{{version|int}}/logs
     {% if preferred_reverse_proxy == "traefik" -%}
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.{{fullinstancename}}.rule={% for domain_item in domains %}Host(`{{ domain_item }}`) {{ "||" if not loop.last else '' }} {% endfor %}     
-      - traefik.http.routers.{{fullinstancename}}.entrypoints=web, websecure
-      - traefik.http.routers.{{fullinstancename}}.tls=true
-      - traefik.http.routers.{{fullinstancename}}.tls.certresolver=production
-      - traefik.http.services.{{fullinstancename}}.loadbalancer.server.port=8069
+        - traefik.enable=true
+        - traefik.http.routers.{{fullinstancename}}.rule={% for domain_item in domains %}Host(`{{ domain_item }}`) {{ "||" if not loop.last else '' }} {% endfor %}     
+        - traefik.http.routers.{{fullinstancename}}.entrypoints=web, websecure
+        - traefik.http.routers.{{fullinstancename}}.tls=true
+        - traefik.http.routers.{{fullinstancename}}.tls.certresolver=production
+        - traefik.http.services.{{fullinstancename}}.loadbalancer.server.port=8069
     {% endif %}
 
   db:
