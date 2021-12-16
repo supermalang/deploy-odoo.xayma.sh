@@ -17,7 +17,7 @@ services:
     {% if preferred_reverse_proxy == "traefik" -%}
     labels:
       - traefik.enable=true
-      - traefik.http.routers.{{fullinstancename}}.rule={% for domain_item in domains %}Host(`{{ domain_item }}`) {{ "||" if not loop.last }} {% endfor %}     
+      - traefik.http.routers.{{fullinstancename}}.rule={% for domain_item in domains %}Host(`{{ domain_item }}`) {{ "||" if not loop.last else '' }} {% endfor %}     
       - traefik.http.routers.{{fullinstancename}}.entrypoints=web, websecure
       - traefik.http.routers.{{fullinstancename}}.tls=true
       - traefik.http.routers.{{fullinstancename}}.tls.certresolver=production
