@@ -7,17 +7,17 @@
     platform_domain: "{{ _platform_domain.stdout }}"
 
 
-- name: Registering the xayma app domain
-  shell: "grep xayma_app_domain /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
-  register: _xayma_app_domain
+- name: Registering the portal domain
+  shell: "grep portal_domain /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
+  register: _portal_domain
 - set_fact:
-    xayma_app_domain: "{{ _xayma_app_domain.stdout }}"
+    portal_domain: "{{ _portal_domain.stdout }}"
 
-- name: Registering the awx domain
-  shell: "grep awx_domain /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
-  register: _awx_domain
+- name: Registering the orchestrator domain
+  shell: "grep orchestrator_domain /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
+  register: _orchestrator_domain
 - set_fact:
-    awx_domain: "{{ _awx_domain.stdout }}"
+    orchestrator_domain: "{{ _orchestrator_domain.stdout }}"
 
 - name: Registering the front network
   shell: "grep front_network /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"

@@ -1,4 +1,4 @@
-  
+#jinja2: lstrip_blocks: True
 # Configuration du reverse proxy pour l'instance {{ instancename }}
 upstream {{ fullinstancename|replace('_', '-') }} {
     server {{fullinstancename}}:8069 ;

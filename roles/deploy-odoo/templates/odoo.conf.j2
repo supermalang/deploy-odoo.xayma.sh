@@ -1,7 +1,5 @@
 #jinja2: lstrip_blocks: True
-
 [options]
-
 #
 # WARNING:
 #  If you use the Odoo Database utility to change the master password be aware  
@@ -77,7 +75,7 @@ admin_passwd = {{ credentials.admin_password }}
 #-----------------------------------------------------------------------------
 # specify the the maximum number of physical connections to posgresql
 #-----------------------------------------------------------------------------
-db_maxconn = 16
+db_maxconn = 64
 
 #-----------------------------------------------------------------------------
 # Filter listed database REGEXP 
