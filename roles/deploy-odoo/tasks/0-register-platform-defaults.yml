@@ -48,3 +48,9 @@
   register: _nginx_config_volume_path
 - set_fact:
     nginx_config_volume_path: "{{ _nginx_config_volume_path.stdout }}"
+
+- name: Registering the preferred reverse proxy
+  shell: "grep preferred_reverse_proxy /opt/xayma-platform-defaults.yml | cut -d ':' -f2 | awk '{$1=$1};1'"
+  register: _preferred_reverse_proxy
+- set_fact:
+    preferred_reverse_proxy: "{{ _preferred_reverse_proxy.stdout }}"
