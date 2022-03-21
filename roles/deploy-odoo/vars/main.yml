@@ -18,6 +18,7 @@ xayma_odoo_paths:
     instance: "{{services_path}}/{{organization}}/{{instancename}}_odoo{{version|int}}"
     config: "{{services_path}}/{{organization}}/{{instancename}}_odoo{{version|int}}/config/"
     logs: "{{services_path}}/{{organization}}/{{instancename}}_odoo{{version|int}}/logs/"
+    datadir: "{{services_path}}/{{organization}}/{{instancename}}_odoo{{version|int}}/webdatafolder/"
 
     
 # TODO

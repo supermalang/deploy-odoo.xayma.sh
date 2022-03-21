@@ -1,4 +1,11 @@
 ---
+- name: Creating Docker compose file if it does not exist
+  template:
+    src: docker-compose.yml.j2
+    force: yes
+    dest: "{{ xayma_odoo_paths.instance }}/docker-compose.yml"
+    mode: '0644'
+
 - name: Starting Odoo instance
   docker_compose:
     project_src: "{{ xayma_odoo_paths.instance }}"

@@ -18,6 +18,18 @@
     state: directory
     mode: '0755'
 
+- name: Creating the Odoo data directory and subfolders
+  file:
+    path: "{{ xayma_odoo_paths.datadir }}/filestore"
+    state: directory
+    recurse: yes
+    mode: '0755'
+  file:
+    path: "{{ xayma_odoo_paths.datadir }}/sessions"
+    state: directory
+    recurse: yes
+    mode: '0755'
+
 - name: Creating Odoo config file
   template:
     src: odoo.conf.j2
