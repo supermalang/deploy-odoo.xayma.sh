@@ -13,6 +13,11 @@
     dest: "{{ xayma_odoo_paths.config }}/odoo.conf"
     mode: '0644'
 
+- name: Deleting comments in the configuration file
+  lineinfile:
+    path: "{{ xayma_odoo_paths.config }}/odoo.conf"
+    state: absent
+    regexp: "^[ #\\r\\n]"
 
 - name: Starting Odoo instance
   docker_compose:
