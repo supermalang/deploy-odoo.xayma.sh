@@ -82,7 +82,8 @@ db_maxconn = 64
 #-----------------------------------------------------------------------------
 dbfilter = {{ instancename }}$
 
-
+list_db = False
+data_dir = /opt/odoodatadir
 
 #HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH
 # Logs Settings
@@ -139,12 +140,12 @@ dbfilter = {{ instancename }}$
 #-----------------------------------------------------------------------------
 # The log filename. If not set, use stdout.
 #-----------------------------------------------------------------------------
-logfile = /opt/{{instancename}}_odoo{{version|int}}/logs/{{ instancename }}.log
+logfile = /opt/odoologs/{{instancename}}_odoo{{version|int}}.log
 
 #-----------------------------------------------------------------------------
 # True/False. If True, create a daily log file and keep 30 files.
 #-----------------------------------------------------------------------------
-logrotate = False
+logrotate = True
 
 #-----------------------------------------------------------------------------
 # Ture/False. If True, also write log to 'ir_logging' table in database
@@ -161,7 +162,7 @@ syslog = False
 # info, debug_rpc, warn, test, critical, debug_sql, error, debug, 
 # debug_rpc_answer
 #-----------------------------------------------------------------------------
-log-level = info
+log-level = warn
 
 #-----------------------------------------------------------------------------
 # log_handler - can be a list of 'module:log_level' pairs. 
