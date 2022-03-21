@@ -14,6 +14,9 @@ services:
         - {{ addons_volume }}:/opt/extra-addons
         - {{xayma_odoo_paths.config}}/odoo.conf:/etc/odoo/odoo.conf
         - {{xayma_odoo_paths.logs}}:/opt/{{instancename}}_odoo{{version|int}}/logs
+        - {{xayma_odoo_paths.logs}}:/opt/{{instancename}}_odoo{{version|int}}/logs
+        - {{xayma_odoo_paths.datadir}}/sessions:/var/lib/odoo/.local/share/Odoo/sessions
+        - {{xayma_odoo_paths.datadir}}/sessions:/var/lib/odoo/.local/share/Odoo/filestore
     {% if preferred_reverse_proxy == "traefik"%}
     labels:
         - traefik.enable=true
