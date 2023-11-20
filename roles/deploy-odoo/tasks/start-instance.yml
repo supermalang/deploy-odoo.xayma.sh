@@ -2,13 +2,13 @@
 - name: Creating Docker compose file if it does not exist
   template:
     src: docker-compose.yml.j2
-    force: yes
+    force: no
     dest: "{{ xayma_odoo_paths.instance }}/docker-compose.yml"
     mode: '0644'
 
 - name: Creating Odoo config file  if it does not exist
   template:
-    force: yes
+    force: no
     src: odoo.conf.j2
     dest: "{{ xayma_odoo_paths.config }}/odoo.conf"
     mode: '0644'
