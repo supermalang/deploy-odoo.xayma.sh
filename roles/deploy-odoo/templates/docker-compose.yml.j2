@@ -4,6 +4,8 @@ services:
   web:
     image: {{_name}}:{{version}}
     container_name: {{fullinstancename}}
+    links:
+      - "db:db"
     networks:
       - frontend
       - default
