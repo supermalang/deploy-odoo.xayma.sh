@@ -10,7 +10,7 @@ be run from the CLI for manual/testing use (a survey provides sane fallbacks).
 
 ```bash
 ansible-playbook site.yml -i production \
-  -e action=deploy -e customer=supermalang -e instancename=laundromat \
+  -e odoo_action=deploy -e customer=supermalang -e instancename=laundromat \
   -e domain=laundromat.supermalang.com -e version=19 \
   -e '{"plan": { ... }}' \
   --vault-password-file vault_password -K
@@ -74,7 +74,7 @@ Identity vars (also survey-able for manual runs):
 | `domain`       | Fully-qualified domain the instance is bound to |
 | `version`      | Odoo major version, e.g. `"19"` → image `odoo:19.0` |
 
-`plan` object (required for `action=deploy`/`restart`/`snapshot`):
+`plan` object (required for `odoo_action=deploy`/`restart`/`snapshot`):
 
 | Key | Description |
 |-----|-------------|
@@ -92,15 +92,15 @@ Identity vars (also survey-able for manual runs):
 | `snapshots.adhoc_allowed` | Quota: max ad-hoc snapshots that may exist at once |
 | `snapshots.adhoc_retention` | Max ad-hoc snapshots kept (oldest pruned) |
 
-`action=restore` additionally requires `snapshot_id` (the timestamp prefix
+`odoo_action=restore` additionally requires `snapshot_id` (the timestamp prefix
 of the snapshot to restore) and accepts optional `snapshot_kind`
 (`daily`|`adhoc`, default `daily`).
 
 Actions
 -------
-Dispatch is driven by a single `action` extra-var (not `--tags` — AWX
+Dispatch is driven by a single `odoo_action` extra-var (not `--tags` — AWX
 surveys set `extra_vars`, so a single Job Template + survey can drive every
-action below). The role fails fast with a clear message if `action` is
+action below). The role fails fast with a clear message if `odoo_action` is
 missing or not one of these values.
 
 This role is **strictly instance-scoped**: every action operates on exactly
@@ -110,7 +110,7 @@ which loops this same instance-scoped Job Template over every active
 instance belonging to that customer — the role itself carries no
 multi-instance action and never will.
 
-| `action` | Description |
+| `odoo_action` | Description |
 |-----|-------------|
 | `deploy` | Create/update an instance (namespace, Postgres, Odoo, ingress, network policies, snapshot CronJob) |
 | `start` | Scale up, repoint the IngressRoute at Odoo |
@@ -127,12 +127,12 @@ CLI examples:
 ```bash
 # Instance-scope action, no plan needed
 ansible-playbook site.yml -i production \
-  -e action=start -e customer=supermalang -e instancename=laundromat \
+  -e odoo_action=start -e customer=supermalang -e instancename=laundromat \
   --vault-password-file vault_password -K
 
 # Instance-scope action that consumes the plan object
 ansible-playbook site.yml -i production \
-  -e action=deploy -e customer=supermalang -e instancename=laundromat \
+  -e odoo_action=deploy -e customer=supermalang -e instancename=laundromat \
   -e domain=laundromat.supermalang.com -e version=19 \
   -e '{"plan": { ... }}' \
   --vault-password-file vault_password -K
@@ -145,12 +145,12 @@ customer-scope Job Template; the Xayma app loops this one over a customer's
 active instances when it needs to act on all of them.
 
 - Job Template → **Variables**: leave empty, set to *Prompt on launch*. This
-  lets the Xayma app pass `action`, the identity vars, and — for
+  lets the Xayma app pass `odoo_action`, the identity vars, and — for
   `deploy`/`restart`/`snapshot` — the nested `plan` object, all as
   `extra_vars` via the AWX API on every launch.
 - Add a **survey** for manual/testing runs from the AWX UI, with fields:
-  - `action` — Multiple Choice, **required**, one of the 9 values in the
-    table above
+  - `odoo_action` — Multiple Choice, **required**, Answer Variable Name
+    `odoo_action`, one of the 9 values in the table above
   - `instancename` — Text, **required**
   - `customer` — Text, **required**
   - `version` — required, default e.g. `"19"`
@@ -189,7 +189,7 @@ A snapshot is a `pg_dump` of the instance database plus a tar of its
 filestore, uploaded to the platform MinIO's `snapshots` bucket, pathed
 `snapshots/{customer}/{instance}/{daily|adhoc}/{timestamp}/`. Daily snapshots
 run on a per-instance CronJob (only created when `plan.snapshots.daily_enabled`);
-ad-hoc snapshots are one-shot Jobs triggered by `action=snapshot`,
+ad-hoc snapshots are one-shot Jobs triggered by `odoo_action=snapshot`,
 which enforce the `adhoc_allowed` quota before dumping anything. Both prune
 their own prefix down to the configured retention count after a successful
 upload.
@@ -212,22 +212,22 @@ derivation seeds — see `vars/main.yml`), `vault_odoo_minio_access_key`,
 
 Known caveats
 -------------
-- Re-running `action=deploy` against an already-suspended/stopped instance
+- Re-running `odoo_action=deploy` against an already-suspended/stopped instance
   resets it to `running` (the Odoo/Postgres replica count is templated as
-  part of the initial-deploy manifests) — use `action=deploy` for
+  part of the initial-deploy manifests) — use `odoo_action=deploy` for
   create/resize while an instance is running; use the dedicated
   `start`/`stop`/`suspend` actions for state changes.
-- `action=snapshot`'s quota (`adhoc_allowed`) is a hard ceiling on how many
+- `odoo_action=snapshot`'s quota (`adhoc_allowed`) is a hard ceiling on how many
   ad-hoc snapshots may exist at once, checked before dumping anything;
   `adhoc_retention` is the separate keep-newest-N pruned after a successful
   upload. Set `adhoc_retention <= adhoc_allowed`.
-- `action=deploy` does not initialize the base database (no `-i base` job).
+- `odoo_action=deploy` does not initialize the base database (no `-i base` job).
   A freshly deployed instance has an empty Postgres with no usable DB until
   initialized out-of-band — this matches the old Docker-based role's
   behavior. `list_db = False` + `dbfilter` in `odoo.conf.j2` mean the
   `/web/database/manager` selector is disabled, so initialization must be
   driven some other way (e.g. a one-off `odoo -i base -d <instance_slug>`
-  run, or a restore of an existing snapshot via `action=restore`).
+  run, or a restore of an existing snapshot via `odoo_action=restore`).
 
 Requirements
 ------------

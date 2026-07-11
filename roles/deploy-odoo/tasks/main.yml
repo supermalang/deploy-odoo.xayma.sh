@@ -1,8 +1,9 @@
 ---
 # tasks file for deploy-odoo (k3s)
 #
-# Dispatch is driven by a single `action` extra-var (AWX surveys set
-# extra_vars, not --tags — see README.md "Actions").
+# Dispatch is driven by a single `odoo_action` extra-var (AWX surveys set
+# extra_vars, not --tags — see README.md "Actions"). Named `odoo_action`
+# rather than `action` because `action` is an Ansible reserved variable name.
 #
 # This role is strictly instance-scoped: every action operates on exactly one
 # instance. Customer-level operations (e.g. suspend every instance for a
@@ -14,39 +15,39 @@
 
 - import_tasks: _assert-identity.yml
 
-- name: Assert a valid `action` was provided
+- name: Assert a valid `odoo_action` was provided
   ansible.builtin.assert:
-    that: action is defined and action in [
+    that: odoo_action is defined and odoo_action in [
             'deploy','start','stop','suspend','restart','edit-domain','delete',
             'snapshot','restore']
-    fail_msg: "Set -e action=<one of: deploy|start|stop|suspend|restart|edit-domain|delete|snapshot|restore>"
+    fail_msg: "Set -e odoo_action=<one of: deploy|start|stop|suspend|restart|edit-domain|delete|snapshot|restore>"
 
 - import_tasks: _assert-plan.yml
-  when: action in ['deploy', 'restart', 'snapshot']
+  when: odoo_action in ['deploy', 'restart', 'snapshot']
 
 - import_tasks: deploy-instance.yml
-  when: action == 'deploy'
+  when: odoo_action == 'deploy'
 
 - import_tasks: start-instance.yml
-  when: action == 'start'
+  when: odoo_action == 'start'
 
 - import_tasks: stop-instance.yml
-  when: action == 'stop'
+  when: odoo_action == 'stop'
 
 - import_tasks: suspend-instance.yml
-  when: action == 'suspend'
+  when: odoo_action == 'suspend'
 
 - import_tasks: restart-instance.yml
-  when: action == 'restart'
+  when: odoo_action == 'restart'
 
 - import_tasks: edit-instance-domainname.yml
-  when: action == 'edit-domain'
+  when: odoo_action == 'edit-domain'
 
 - import_tasks: delete-instance.yml
-  when: action == 'delete'
+  when: odoo_action == 'delete'
 
 - import_tasks: snapshot-instance.yml
-  when: action == 'snapshot'
+  when: odoo_action == 'snapshot'
 
 - import_tasks: restore-instance.yml
-  when: action == 'restore'
+  when: odoo_action == 'restore'

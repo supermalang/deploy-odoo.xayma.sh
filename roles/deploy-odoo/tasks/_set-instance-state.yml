@@ -7,7 +7,7 @@
 # Scales Odoo+PG via k8s_scale, then re-points the instance's IngressRoute.
 # The Host(...) match and whether a longpolling route exists are recovered
 # from the LIVE IngressRoute rather than needing the original `domain`/`plan`
-# passed back in — start/stop/suspend only receive `action`+identity vars,
+# passed back in — start/stop/suspend only receive `odoo_action`+identity vars,
 # not the instance's domain or plan.
 - name: "[{{ _state_instance_slug }}] Scale the Odoo Deployment"
   kubernetes.core.k8s_scale:

@@ -1,6 +1,6 @@
 #jinja2: lstrip_blocks: True
 ---
-# Ad-hoc snapshot, triggered by `action=snapshot`. Enforces
+# Ad-hoc snapshot, triggered by `odoo_action=snapshot`. Enforces
 # plan.snapshots.adhoc_allowed as a hard quota (checked BEFORE dumping
 # anything, in its own initContainer, so an over-quota trigger fails fast
 # without wasting a dump) and prunes to plan.snapshots.adhoc_retention after

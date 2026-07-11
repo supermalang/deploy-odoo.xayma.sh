@@ -129,7 +129,7 @@ spec:
 # by every instance's IngressRoute when suspended/stopped and by the
 # 404/50x errors middleware on running instances. Namespace-wide (one
 # suspend-backend per customer, not per instance) — fixed name so re-applying
-# it on every action=deploy is idempotent.
+# it on every odoo_action=deploy is idempotent.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

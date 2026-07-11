@@ -7,7 +7,7 @@
 - name: Assert snapshot_id was provided
   ansible.builtin.assert:
     that: snapshot_id is defined and snapshot_id | length > 0
-    fail_msg: "action=restore requires -e snapshot_id=<timestamp> (and optionally snapshot_kind=daily|adhoc)."
+    fail_msg: "odoo_action=restore requires -e snapshot_id=<timestamp> (and optionally snapshot_kind=daily|adhoc)."
 
 - name: Scale the Odoo Deployment down for the restore
   kubernetes.core.k8s_scale:
