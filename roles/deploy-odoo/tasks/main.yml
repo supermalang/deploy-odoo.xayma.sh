@@ -1,53 +1,63 @@
 ---
 # tasks file for deploy-odoo (k3s)
 #
-# Instance scope: deployinstance, startinstance, stopinstance, suspendinstance,
-#                 restartinstance, editinstancedomainname, deleteinstance,
-#                 snapshotinstance, restoreinstance
-# Customer scope: startcustomer, stopcustomer, suspendcustomer, deletecustomer
-#                 (loop over every instance matching xayma.sh/customer=X)
+# Dispatch is driven by a single `action` extra-var (AWX surveys set
+# extra_vars, not --tags — see README.md "Actions").
+#
+# Instance scope: deploy, start, stop, suspend, restart, edit-domain, delete,
+#                 snapshot, restore
+# Customer scope: start-customer, stop-customer, suspend-customer,
+#                 delete-customer (loop over every instance matching
+#                 xayma.sh/customer=X)
 
 - import_tasks: _assert-identity.yml
-  tags: always
+
+- name: Assert a valid `action` was provided
+  ansible.builtin.assert:
+    that: action is defined and action in [
+            'deploy','start','stop','suspend','restart','edit-domain','delete',
+            'snapshot','restore','start-customer','stop-customer',
+            'suspend-customer','delete-customer']
+    fail_msg: "Set -e action=<one of: deploy|start|stop|suspend|restart|edit-domain|delete|snapshot|restore|start-customer|stop-customer|suspend-customer|delete-customer>"
 
 - import_tasks: _assert-plan.yml
-  tags: [deployinstance, restartinstance, snapshotinstance]
+  when: action in ['deploy', 'restart', 'snapshot']
 
 - import_tasks: deploy-instance.yml
-  tags: deployinstance
+  when: action == 'deploy'
 
 - import_tasks: start-instance.yml
-  tags: startinstance
+  when: action == 'start'
 
 - import_tasks: stop-instance.yml
-  tags: stopinstance
+  when: action == 'stop'
 
 - import_tasks: suspend-instance.yml
-  tags: suspendinstance
+  when: action == 'suspend'
 
 - import_tasks: restart-instance.yml
-  tags: restartinstance
+  when: action == 'restart'
 
 - import_tasks: edit-instance-domainname.yml
-  tags: editinstancedomainname
+  when: action == 'edit-domain'
 
 - import_tasks: delete-instance.yml
-  tags: deleteinstance
+  when: action == 'delete'
 
 - import_tasks: snapshot-instance.yml
-  tags: snapshotinstance
+  when: action == 'snapshot'
 
 - import_tasks: restore-instance.yml
-  tags: restoreinstance
+  when: action == 'restore'
 
 - import_tasks: start-customer.yml
-  tags: startcustomer
+  when: action == 'start-customer'
 
 - import_tasks: stop-customer.yml
-  tags: stopcustomer
+  when: action == 'stop-customer'
 
 - import_tasks: suspend-customer.yml
-  tags: suspendcustomer
+  when: action == 'suspend-customer'
 
 - import_tasks: delete-customer.yml
-  tags: deletecustomer
+  when: action == 'delete-customer'
