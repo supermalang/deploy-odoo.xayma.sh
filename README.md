@@ -156,9 +156,31 @@ active instances when it needs to act on all of them.
   - `version` — required, default e.g. `"19"`
   - `domain` — optional; when unset the role derives
     `<instancename>.<platform_domain>` (see `defaults/main/01-deploy-odoo-defaults.yml`)
-  - `plan` — Textarea/JSON; **required** for `deploy`/`restart`/`snapshot`,
-    **no default** — a missing plan must fail loudly via `_assert-plan.yml`,
-    never silently deploy with the wrong sizing
+  - `plan` — **Textarea**, variable `plan`; **required** for
+    `deploy`/`restart`/`snapshot`, **no default** — a missing plan must fail
+    loudly via `_assert-plan.yml`, never silently deploy with the wrong
+    sizing. Paste **JSON** (not YAML) into the field, e.g.:
+    ```json
+    {
+      "workers": 2, "db_maxconn": 20,
+      "mem_soft": 629145600, "mem_hard": 671088640,
+      "max_cron_threads": 1,
+      "odoo_resources": {"requests": {"cpu": "250m", "memory": "512Mi"}, "limits": {"cpu": "1", "memory": "1Gi"}},
+      "pg_resources": {"requests": {"cpu": "250m", "memory": "256Mi"}, "limits": {"cpu": "1", "memory": "512Mi"}},
+      "filestore_storage": "10Gi", "pg_storage": "5Gi",
+      "snapshots": {
+        "daily_enabled": true, "daily_schedule": "0 3 * * *", "daily_retention": 7,
+        "adhoc_allowed": 3, "adhoc_retention": 3
+      }
+    }
+    ```
+    Since AWX surveys only carry scalars, the Textarea answer arrives as a
+    JSON **string**; the Xayma app's API launch instead sends `plan` as a
+    native JSON **object** in `extra_vars`. `_assert-plan.yml` accepts
+    either form and normalizes a string answer to a dict (`from_json`)
+    before asserting/using any `plan.*` key — so a survey run no longer
+    needs `plan` passed separately via "Extra Variables / Prompt on
+    launch"; the survey field is enough.
   - `snapshot_id` / `snapshot_kind` — for `restore`
 
 Snapshots
