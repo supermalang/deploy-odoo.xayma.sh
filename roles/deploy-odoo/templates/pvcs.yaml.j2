@@ -1,0 +1,30 @@
+#jinja2: lstrip_blocks: True
+---
+# Filestore (/var/lib/odoo) — sized from the app-supplied plan.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ instance_name }}-filestore
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_odoo | to_json }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ odoo.storage_class }}
+  resources:
+    requests:
+      storage: {{ plan.filestore_storage }}
+---
+# Addons (/opt/extra-addons) — populated out-of-band (ops/CI), not sized by
+# the plan; starts at a fixed default.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ instance_name }}-addons
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_odoo | to_json }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ odoo.storage_class }}
+  resources:
+    requests:
+      storage: {{ odoo.default_addons_storage }}

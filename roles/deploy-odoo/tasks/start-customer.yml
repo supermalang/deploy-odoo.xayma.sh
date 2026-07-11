@@ -1,0 +1,13 @@
+---
+- import_tasks: discover-customer-instances.yml
+
+- name: "Start every instance for customer {{ customer_slug }}"
+  ansible.builtin.include_tasks: _set-instance-state.yml
+  vars:
+    _state_instance_slug: "{{ item.slug }}"
+    _state_instance_name: "{{ item.name }}"
+    _state_pg_name: "{{ item.name }}-pg"
+    _state_state: running
+  loop: "{{ customer_instances }}"
+  loop_control:
+    label: "{{ item.slug }}"

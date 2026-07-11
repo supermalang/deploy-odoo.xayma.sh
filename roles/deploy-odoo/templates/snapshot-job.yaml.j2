@@ -1,0 +1,95 @@
+#jinja2: lstrip_blocks: True
+---
+# Ad-hoc snapshot, triggered by the `snapshotinstance` tag. Enforces
+# plan.snapshots.adhoc_allowed as a hard quota (checked BEFORE dumping
+# anything, in its own initContainer, so an over-quota trigger fails fast
+# without wasting a dump) and prunes to plan.snapshots.adhoc_retention after
+# a successful upload — under snapshots/{customer}/{instance}/adhoc/.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ instance_slug }}-snapshot-adhoc-{{ ansible_date_time.iso8601_basic_short | lower }}
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_snapshot | to_json }}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {{ odoo_labels_snapshot | to_json }}
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: quota-check
+          image: rclone/rclone:{{ versions.rclone }}
+          command:
+            - /bin/sh
+            - -c
+            - >-
+              set -eu;
+              count=$(rclone lsf --dirs-only
+              snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/adhoc/
+              2>/dev/null | wc -l);
+              if [ "$count" -ge {{ plan.snapshots.adhoc_allowed }} ]; then
+              echo "ad-hoc snapshot quota reached ($count/{{ plan.snapshots.adhoc_allowed }}) - refusing";
+              exit 1;
+              fi
+          env:
+            - {name: RCLONE_CONFIG_SNAPSHOT_TYPE, value: s3}
+            - {name: RCLONE_CONFIG_SNAPSHOT_PROVIDER, value: Other}
+            - {name: RCLONE_CONFIG_SNAPSHOT_ENDPOINT, value: {{ odoo.snapshot_endpoint | to_json }}}
+            - {name: RCLONE_CONFIG_SNAPSHOT_ACL, value: private}
+          envFrom:
+            - secretRef: {name: {{ customer_slug }}-minio}
+        - name: pg-dump
+          image: postgres:{{ versions.postgres }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              pg_dump -h {{ pg_name }} -U "$POSTGRES_USER" {{ instancename }}
+              | gzip > /dump/db.sql.gz
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: {name: {{ instance_name }}, key: DB_USER}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ instance_name }}, key: DB_PASSWORD}
+          volumeMounts:
+            - {name: dump, mountPath: /dump}
+        - name: filestore-archive
+          image: busybox:{{ versions.busybox }}
+          command: ["sh", "-c", "set -eu; tar czf /dump/filestore.tar.gz -C /filestore ."]
+          volumeMounts:
+            - {name: dump, mountPath: /dump}
+            - {name: filestore, mountPath: /filestore, readOnly: true}
+      containers:
+        - name: rclone-upload
+          image: rclone/rclone:{{ versions.rclone }}
+          command:
+            - /bin/sh
+            - -c
+            - >-
+              set -eu;
+              ts=$(date +%Y-%m-%dT%H-%M-%S);
+              rclone copy /dump snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/adhoc/$ts/;
+              rclone lsf --dirs-only snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/adhoc/
+              | sort | head -n -{{ plan.snapshots.adhoc_retention }}
+              | while read -r d; do
+              [ -n "$d" ] && rclone purge "snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/adhoc/$d";
+              done
+          env:
+            - {name: RCLONE_CONFIG_SNAPSHOT_TYPE, value: s3}
+            - {name: RCLONE_CONFIG_SNAPSHOT_PROVIDER, value: Other}
+            - {name: RCLONE_CONFIG_SNAPSHOT_ENDPOINT, value: {{ odoo.snapshot_endpoint | to_json }}}
+            - {name: RCLONE_CONFIG_SNAPSHOT_ACL, value: private}
+          envFrom:
+            - secretRef: {name: {{ customer_slug }}-minio}
+          volumeMounts:
+            - {name: dump, mountPath: /dump}
+      volumes:
+        - {name: dump, emptyDir: {}}
+        - name: filestore
+          persistentVolumeClaim:
+            claimName: {{ instance_name }}-filestore

@@ -1,0 +1,88 @@
+#jinja2: lstrip_blocks: True
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ instance_name }}
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_odoo | to_json }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: odoo
+      xayma.sh/instance: {{ instance_slug }}
+  template:
+    metadata:
+      labels: {{ odoo_labels_odoo | to_json }}
+    spec:
+      # odoo.conf (ConfigMap) has no secrets in it — db_user/db_password/
+      # admin_passwd are ${PLACEHOLDER} tokens substituted from the instance
+      # Secret into a shared emptyDir here, so the rendered config the
+      # container actually reads never touches a ConfigMap in plaintext.
+      initContainers:
+        - name: render-config
+          image: busybox:{{ versions.busybox }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              sed
+              -e "s|\${DB_USER}|$DB_USER|g"
+              -e "s|\${DB_PASSWORD}|$DB_PASSWORD|g"
+              -e "s|\${ADMIN_PASSWD}|$ADMIN_PASSWD|g"
+              /config/odoo.conf > /etc/odoo/odoo.conf
+          envFrom:
+            - secretRef:
+                name: {{ instance_name }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: etc-odoo
+              mountPath: /etc/odoo
+      containers:
+        - name: odoo
+          image: odoo:{{ version }}.0
+          ports:
+            - name: http
+              containerPort: 8069
+{% if plan.workers | int > 0 %}
+            - name: longpolling
+              containerPort: 8072
+{% endif %}
+          volumeMounts:
+            - name: etc-odoo
+              mountPath: /etc/odoo
+            - name: filestore
+              mountPath: /var/lib/odoo
+            - name: addons
+              mountPath: /opt/extra-addons
+          resources: {{ plan.odoo_resources | to_json }}
+          readinessProbe:
+            httpGet:
+              path: /web/login
+              port: 8069
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /web/login
+              port: 8069
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 6
+      volumes:
+        - name: config
+          configMap:
+            name: {{ instance_name }}
+        - name: etc-odoo
+          emptyDir: {}
+        - name: filestore
+          persistentVolumeClaim:
+            claimName: {{ instance_name }}-filestore
+        - name: addons
+          persistentVolumeClaim:
+            claimName: {{ instance_name }}-addons

@@ -1,7 +1,66 @@
 ---
-    
+# defaults file for deploy-odoo (k3s)
+#
+# Deploys per-customer Odoo instances as Kubernetes workloads: one namespace
+# per customer (xayma.sh/customer), holding a self-contained "slice" per
+# instance (Odoo Deployment, its OWN Postgres StatefulSet, ConfigMap/Secret,
+# filestore+addons PVCs, Service, IngressRoute+Certificate, NetworkPolicies).
+#
+# This role is a STATELESS EXECUTOR: the Xayma app is the source of truth for
+# plans and launches the AWX job with a fully-resolved `plan` object in
+# extra_vars (see tasks/_assert-plan.yml for the required keys). No `plans:`
+# dict lives here, and nothing is looked up — every plan.* key is templated
+# straight into the rendered manifests. `xayma_odoo` below is ONLY a survey
+# fallback for manual CLI/AWX-UI runs; it is never consulted when the app
+# supplies customer/instancename/version/domain directly.
+
 xayma_odoo:
-    name: odoo
-    organization: "xayma"
-    instancename: "xayma_odoo"
-    version: "11.0"
+  organization: "xayma"
+  instancename: "sandbox"
+  version: "19"
+
+# Role defaults are the LOWEST-precedence variable layer, so extra_vars from
+# the AWX job (or -e on the CLI) cleanly override these — no self-reference,
+# unlike trying to do this in vars/main.yml (see that file's header comment).
+customer: "{{ xayma_odoo.organization }}"
+instancename: "{{ xayma_odoo.instancename }}"
+version: "{{ xayma_odoo.version }}"
+domain: "{{ instancename }}"
+
+# --- Platform-wide seam vars ---
+# Same contract as install-platform.xayma.sh's group_vars/all/main.yml, kept
+# as plain role defaults for now (this role is deployed from its own AWX job,
+# not the platform's site.yml). Clean seam to later replace these with a
+# kubernetes.core.k8s_info lookup against a platform-published ConfigMap
+# instead of hardcoding them here.
+kubeconfig_path: /etc/rancher/k3s/k3s.yaml
+cluster_issuer: letsencrypt-production
+platform_domain: xayma.net
+
+# --- Role-owned, non-plan defaults ---
+# Sizing/scheduling that comes from the app-supplied `plan` object (workers,
+# resources, PVC sizes, snapshot policy) is NOT declared here — see
+# tasks/_assert-plan.yml for the full contract.
+odoo:
+  # Addons PVC is populated out-of-band (ops/CI, not this role) and isn't
+  # part of the plan object, so it gets a fixed starting size here.
+  default_addons_storage: 5Gi
+  storage_class: local-path
+
+  # Platform MinIO (internal, backup/snapshot target) — same values as
+  # install-platform.xayma.sh's deploy-databases/deploy-platform-storage,
+  # re-declared here since roles in that platform are self-contained
+  # copy-paste consumers of well-known values rather than cross-role
+  # variable references.
+  storage_namespace: xayma-storage
+  snapshot_bucket: snapshots
+  snapshot_endpoint: "http://minio.{{ odoo.storage_namespace }}.svc:9000"
+  snapshot_access_key: "{{ vault_odoo_minio_access_key }}"
+  snapshot_secret_key: "{{ vault_odoo_minio_secret_key }}"
+
+# All component versions pinned explicitly — never `latest`.
+versions:
+  odoo: "19"                 # survey fallback only; real deploys pass `version` explicitly
+  postgres: "16.6-bookworm"   # per-instance dedicated Postgres (no AWX-style PG15 pin needed here)
+  busybox: "1.38.0"           # suspend/stop backend + config-merge initContainer
+  rclone: "1.74.3"            # snapshot/restore Jobs -> platform MinIO

@@ -1,51 +1,167 @@
 Deploy-Odoo
 =========
 
-This role is for deploying and managing Odoo instances with different versions.
-It is intended to be used with the Ansible Tower and the Xayma.sh Platform already deployed (with all it's components).  
-However if you want to use command create and manage odoo instances from the command line, with the Xayma.sh Platform already deployed, you can use the following:
+This role deploys and manages per-customer Odoo instances as Kubernetes
+workloads on the Xayma.sh Platform's single-node **k3s** cluster (the
+`install-platform.xayma.sh` repo — Traefik v3 + cert-manager + `kubernetes.core`).
+It is intended to run as an AWX job launched by the Xayma app, which passes
+identity vars and a fully-resolved `plan` object as `extra_vars`. It can also
+be run from the CLI for manual/testing use (a survey provides sane fallbacks).
 
 ```bash
-ansible-playbook site.yml -i production --tags "deployodoo" --extra-vars "organization=xaymasolutions instancename=portal domain=portal.xaymasolutions.com" --vault-pass-file "vault_password" -K
+ansible-playbook site.yml -i production --tags "deployinstance" \
+  --extra-vars '{"customer": "supermalang", "instancename": "laundromat", "domain": "laundromat.supermalang.com", "version": "19", "plan": { ... }}' \
+  --vault-password-file vault_password -K
 ```
 
-> You need to know that when using the CLI way, the instance's addon folder will not be created by default and it might lead to some errors. In that situation you will need to create the addon folder manually.
-
-
-Requirements
+Architecture
 ------------
-- Deployment of the Xayma.sh Platform. Otherwise this is completely useless.
-- Make sure to use the secret vault password 😎. Can be a file (if you are using CLI) or a credential record in Ansible Tower.
+- **One namespace per customer** (e.g. `supermalang`), holding every Odoo
+  instance for that customer.
+- **Each instance is a self-contained slice** inside that namespace: an Odoo
+  Deployment, its OWN dedicated Postgres StatefulSet (not the platform's
+  shared Postgres — full per-tenant isolation), a ConfigMap (`odoo.conf`) +
+  Secret (DB/admin passwords), filestore + addons PVCs, a Service, an
+  IngressRoute + cert-manager Certificate, and a set of NetworkPolicies.
+- Kubernetes object names are `{customer}-{instance}-odoo{version}` (e.g.
+  `supermalang-laundromat-odoo19`) — `customer`/`instancename` are slugified
+  to RFC-1123 (lowercase, `[a-z0-9-]`, ≤63 chars); un-sluggable input fails
+  fast with a clear error rather than a mid-deploy Kubernetes API rejection.
+- Every resource carries `app.kubernetes.io/part-of: xayma-platform`,
+  `app.kubernetes.io/managed-by: ansible`, `app.kubernetes.io/name`
+  (`odoo`/`postgres`/`snapshot`/`suspend-backend`), and
+  `xayma.sh/{customer,instance,odoo-version}` — teardown and NetworkPolicy
+  selectors are entirely label-driven.
+- A single **suspend-backend** (busybox httpd) is shared by every instance in
+  a customer namespace, serving `suspended.html`/`stopped.html`/`404.html`/
+  `50x.html`. Suspending/stopping an instance repoints its IngressRoute at
+  this backend (with a `replacePathRegex` Middleware forcing the right page,
+  no client-visible redirect); running instances also route their 404/50x
+  through it via a Traefik `errors` Middleware, for a styled fallback page.
+- **NetworkPolicies are written by this role**, not the platform's
+  `deploy-network-policies` (which only iterates its own fixed platform
+  namespace list and never sees a customer namespace): default-deny ingress,
+  edge → Odoo, `network-zone=observability` (pgAdmin) → Postgres, and
+  same-instance-only Odoo/snapshot → Postgres. The namespace itself still
+  carries `xayma.sh/network-zone: webservers` so the platform's existing
+  `databases ← webservers` rule (a live label selector) lets this
+  namespace's snapshot Jobs reach the platform MinIO.
 
+Stateless executor
+-------------------
+This role ships **no `plans:` dict** and does not look anything up — the
+Xayma app is the source of truth for plans and launches the AWX job with a
+fully-resolved `plan` object. `tasks/_assert-plan.yml` only asserts the
+contract below is met, then templates every value straight through.
+
+There are also no per-instance password fields anywhere in the input
+contract: the DB password and Odoo master password are derived
+deterministically per instance from a per-role vault seed
+(`vault_odoo_db_password`/`vault_odoo_admin_password`) plus the
+customer/instance slugs (`vars/main.yml`) — idempotent, nothing generated or
+persisted.
+
+Input contract
+---------------
+Identity vars (also survey-able for manual runs):
+
+| Var            | Description |
+|----------------|-------------|
+| `customer`     | Customer slug/name (slugified to the namespace name) |
+| `instancename` | Instance name (slugified into the k8s object name) |
+| `domain`       | Fully-qualified domain the instance is bound to |
+| `version`      | Odoo major version, e.g. `"19"` → image `odoo:19.0` |
+
+`plan` object (required for `deployinstance`/`restartinstance`/`snapshotinstance`):
+
+| Key | Description |
+|-----|-------------|
+| `workers` | Odoo `workers` (0 = threaded; >0 wires the 8072 long-polling port) |
+| `db_maxconn` | `db_maxconn` in odoo.conf |
+| `mem_soft` / `mem_hard` | `limit_memory_soft` / `limit_memory_hard` (bytes) |
+| `max_cron_threads` | `max_cron_threads` in odoo.conf |
+| `odoo_resources.{requests,limits}` | Odoo container resources |
+| `pg_resources.{requests,limits}` | Postgres container resources |
+| `filestore_storage` | Filestore PVC size (e.g. `10Gi`) |
+| `pg_storage` | Postgres PVC size |
+| `snapshots.daily_enabled` | Whether a daily snapshot CronJob is created |
+| `snapshots.daily_schedule` | Cron schedule for the daily snapshot |
+| `snapshots.daily_retention` | Max daily snapshots kept (oldest pruned) |
+| `snapshots.adhoc_allowed` | Quota: max ad-hoc snapshots that may exist at once |
+| `snapshots.adhoc_retention` | Max ad-hoc snapshots kept (oldest pruned) |
+
+`restoreinstance` additionally requires `snapshot_id` (the timestamp prefix
+of the snapshot to restore) and accepts optional `snapshot_kind`
+(`daily`|`adhoc`, default `daily`).
 
 Role Tags
 ---------
-You can use this role with the following tags: 
+| Tag | Scope | Description |
+|-----|-------|-------------|
+| `deployinstance` | instance | Create/update an instance (namespace, Postgres, Odoo, ingress, network policies, snapshot CronJob) |
+| `startinstance` | instance | Scale up, repoint the IngressRoute at Odoo |
+| `stopinstance` | instance | Scale down, repoint the IngressRoute at the stopped page |
+| `suspendinstance` | instance | Scale down, repoint the IngressRoute at the suspended page |
+| `restartinstance` | instance | Reapply config/Deployment/StatefulSet, then force pod recreation |
+| `editinstancedomainname` | instance | Change the domain, preserving the current running/suspended/stopped state |
+| `deleteinstance` | instance | Delete every resource labelled for this instance |
+| `snapshotinstance` | instance | Trigger an ad-hoc snapshot (subject to `adhoc_allowed`/`adhoc_retention`) |
+| `restoreinstance` | instance | Restore a snapshot (`snapshot_id`, optional `snapshot_kind`) |
+| `startcustomer` | customer | Start every instance for the customer |
+| `stopcustomer` | customer | Stop every instance for the customer |
+| `suspendcustomer` | customer | Suspend every instance for the customer |
+| `deletecustomer` | customer | Delete the customer's entire namespace |
 
-| Tag                    | Description              |
-|------------------------|--------------------------|
-| deployodoo             | To create a new instance of Odoo      |
-| stopinstance           | To stop the instance     |
-| startinstance          | To start the instance    |
-| suspendinstance        | To suspend the instance (stop and display a "suspended" page in the browser |
-| editinstancedomainname | To change the main domain name of the instance   |
+Snapshots
+---------
+A snapshot is a `pg_dump` of the instance database plus a tar of its
+filestore, uploaded to the platform MinIO's `snapshots` bucket, pathed
+`snapshots/{customer}/{instance}/{daily|adhoc}/{timestamp}/`. Daily snapshots
+run on a per-instance CronJob (only created when `plan.snapshots.daily_enabled`);
+ad-hoc snapshots are one-shot Jobs triggered by the `snapshotinstance` tag,
+which enforce the `adhoc_allowed` quota before dumping anything. Both prune
+their own prefix down to the configured retention count after a successful
+upload.
 
+Versions
+--------
+Pinned in `defaults/main/01-deploy-odoo-defaults.yml` (`versions:` dict) —
+Odoo `"19"` (`odoo:19.0`, survey fallback only; real deploys pass `version`
+explicitly), Postgres `16.6-bookworm` (dedicated per instance), `busybox`
+(suspend-backend + config-merge initContainer), `rclone` (snapshot/restore
+Jobs). Never `latest`.
 
-Role Variables
---------------
+Vault
+-----
+`defaults/main/02-credentials.yml` (encrypted) holds:
+`vault_odoo_db_password`, `vault_odoo_admin_password` (per-instance secret
+derivation seeds — see `vars/main.yml`), `vault_odoo_minio_access_key`,
+`vault_odoo_minio_secret_key` (platform MinIO, snapshots bucket). See
+`defaults/main/02-credentials.yml.example` to (re)create it.
 
-You can customize you instance by using thes variables
-| Tag                    | Description              |
-|------------------------|--------------------------|
-| organization           | The customer for which the instance is being created (*should be one single word with no special characters*) |
-| instancename           | The name of the instance (*should be one single word with no special characters*)  |
-| domain                 | The domain name to which the instance will be bound |
-| version                | The version Odoo that will be deployed (*Should be an existing version*) |
+Known caveats
+-------------
+- Re-running `deployinstance` against an already-suspended/stopped instance
+  resets it to `running` (the Odoo/Postgres replica count is templated as
+  part of the initial-deploy manifests) — use `deployinstance` for
+  create/resize while an instance is running; use the dedicated
+  `start`/`stop`/`suspend` tags for state changes.
+- `snapshotinstance`'s quota (`adhoc_allowed`) is a hard ceiling on how many
+  ad-hoc snapshots may exist at once, checked before dumping anything;
+  `adhoc_retention` is the separate keep-newest-N pruned after a successful
+  upload. Set `adhoc_retention <= adhoc_allowed`.
 
+Requirements
+------------
+- The Xayma.sh Platform (k3s + Traefik + cert-manager + a platform MinIO)
+  already deployed — see `install-platform.xayma.sh`.
+- `kubernetes.core` and `community.general` Galaxy collections (see
+  `requirements.yml`).
+- The vault password, as a file (CLI) or a credential record (AWX).
 
 Dependencies
 ------------
-All dependencies should be already installed during the deployment of the Xayma.sh platform.
+None beyond the platform itself (see Requirements).
 
 License
 -------
@@ -55,8 +171,8 @@ MIT
 Author Information
 ------------------
 
-- Elhadji Malang Diedhiou  
-For the past seve years I have been helping businesses to increase efficiency, using automation tools. I am passionate in learning and sharing.  
+- Elhadji Malang Diedhiou
+For the past seve years I have been helping businesses to increase efficiency, using automation tools. I am passionate in learning and sharing.
 **More about me**:
   * [LinkedIn]
   * [Twitter]
@@ -65,4 +181,3 @@ For the past seve years I have been helping businesses to increase efficiency, u
 [LinkedIn]: https://linkedin.com/in/supermalang
 [GitHub]: https://github.com/supermalang
 [Twitter]: https://twitter.com/supermalang_
-

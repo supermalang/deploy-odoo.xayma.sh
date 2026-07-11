@@ -1,7 +1,52 @@
 ---
-- name: Restarting Odoo instance
-  docker_compose:
-    project_src: "{{ xayma_odoo_paths.instance }}"
+# Reapply the config/Deployment/StatefulSet for drift correction, then force
+# pod recreation via an annotation patch (re-applying identical YAML alone
+# does not recreate already-running pods).
+- name: Reapply the odoo.conf ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
     state: present
-    restarted: true
-  when: instancename != xayma_odoo.instancename # We make sure the user has provided an instance name
+    namespace: "{{ customer_slug }}"
+    template: odoo-configmap.yaml.j2
+
+- name: Reapply the Odoo Deployment
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: odoo-deployment.yaml.j2
+
+- name: Reapply the Postgres StatefulSet
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: pg-statefulset.yaml.j2
+
+- name: Force Odoo pod recreation
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: patched
+    kind: Deployment
+    namespace: "{{ customer_slug }}"
+    name: "{{ instance_name }}"
+    definition:
+      spec:
+        template:
+          metadata:
+            annotations:
+              xayma.sh/restarted-at: "{{ ansible_date_time.iso8601 }}"
+
+- name: Force Postgres pod recreation
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: patched
+    kind: StatefulSet
+    namespace: "{{ customer_slug }}"
+    name: "{{ pg_name }}"
+    definition:
+      spec:
+        template:
+          metadata:
+            annotations:
+              xayma.sh/restarted-at: "{{ ansible_date_time.iso8601 }}"

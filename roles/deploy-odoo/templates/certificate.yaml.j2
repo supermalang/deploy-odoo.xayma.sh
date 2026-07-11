@@ -1,0 +1,15 @@
+#jinja2: lstrip_blocks: True
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ instance_name }}-tls
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_odoo | to_json }}
+spec:
+  secretName: {{ instance_name }}-tls
+  dnsNames:
+    - "{{ domain }}"
+  issuerRef:
+    name: "{{ cluster_issuer }}"
+    kind: ClusterIssuer

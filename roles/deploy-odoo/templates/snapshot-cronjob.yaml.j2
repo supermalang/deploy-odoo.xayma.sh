@@ -1,0 +1,80 @@
+#jinja2: lstrip_blocks: True
+---
+# Daily snapshot (pg_dump + filestore tar) -> platform MinIO, count-based
+# pruning to plan.snapshots.daily_retention. Two-stage shape mirrors
+# install-platform.xayma.sh's deploy-databases/templates/postgres-backup-cronjob.yaml.j2
+# (dump/archive initContainers -> shared emptyDir -> rclone-upload container),
+# only applied when plan.snapshots.daily_enabled.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ instance_slug }}-snapshot-daily
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_snapshot | to_json }}
+spec:
+  schedule: {{ plan.snapshots.daily_schedule | to_json }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels: {{ odoo_labels_snapshot | to_json }}
+        spec:
+          restartPolicy: OnFailure
+          initContainers:
+            - name: pg-dump
+              image: postgres:{{ versions.postgres }}
+              command:
+                - sh
+                - -c
+                - >-
+                  set -eu;
+                  pg_dump -h {{ pg_name }} -U "$POSTGRES_USER" {{ instancename }}
+                  | gzip > /dump/db.sql.gz
+              env:
+                - name: POSTGRES_USER
+                  valueFrom:
+                    secretKeyRef: {name: {{ instance_name }}, key: DB_USER}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: {{ instance_name }}, key: DB_PASSWORD}
+              volumeMounts:
+                - {name: dump, mountPath: /dump}
+            - name: filestore-archive
+              image: busybox:{{ versions.busybox }}
+              command: ["sh", "-c", "set -eu; tar czf /dump/filestore.tar.gz -C /filestore ."]
+              volumeMounts:
+                - {name: dump, mountPath: /dump}
+                - {name: filestore, mountPath: /filestore, readOnly: true}
+          containers:
+            - name: rclone-upload
+              image: rclone/rclone:{{ versions.rclone }}
+              command:
+                - /bin/sh
+                - -c
+                - >-
+                  set -eu;
+                  ts=$(date +%Y-%m-%dT%H-%M-%S);
+                  rclone copy /dump snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/daily/$ts/;
+                  rclone lsf --dirs-only snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/daily/
+                  | sort | head -n -{{ plan.snapshots.daily_retention }}
+                  | while read -r d; do
+                  [ -n "$d" ] && rclone purge "snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/daily/$d";
+                  done
+              env:
+                - {name: RCLONE_CONFIG_SNAPSHOT_TYPE, value: s3}
+                - {name: RCLONE_CONFIG_SNAPSHOT_PROVIDER, value: Other}
+                - {name: RCLONE_CONFIG_SNAPSHOT_ENDPOINT, value: {{ odoo.snapshot_endpoint | to_json }}}
+                - {name: RCLONE_CONFIG_SNAPSHOT_ACL, value: private}
+              envFrom:
+                - secretRef: {name: {{ customer_slug }}-minio}
+              volumeMounts:
+                - {name: dump, mountPath: /dump}
+          volumes:
+            - {name: dump, emptyDir: {}}
+            - name: filestore
+              persistentVolumeClaim:
+                claimName: {{ instance_name }}-filestore

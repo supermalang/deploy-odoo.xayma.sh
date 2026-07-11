@@ -1,25 +1,61 @@
 ---
+# `customer`/`instancename`/`domain`/`version` are the public interface
+# (extra_vars from the Xayma app, or the survey for manual runs); their
+# survey-fallback defaults live in defaults/main/01-deploy-odoo-defaults.yml
+# (role defaults are the lowest-precedence layer, so extra_vars cleanly
+# override them there — defining them here instead, self-referencing their
+# own not-yet-overridden name for a `default()`, is circular: vars/main.yml
+# is a single precedence layer, so `customer: "{{ customer | default(...) }}"`
+# resolves `customer` against itself, not against a lower layer).
+# `plan` is the app-supplied, fully-resolved sizing/feature object (see
+# defaults/main/01-deploy-odoo-defaults.yml + tasks/_assert-plan.yml).
 
-organization: "{{ xayma_odoo.organization }}"
-instancename: "{{ xayma_odoo.instancename }}"
-version: "{{ xayma_odoo.version }}"
-domain: "{{ instancename }}"
-_name: "{{ xayma_odoo.name }}"
-fullinstancename: "{{organization}}_{{instancename}}_odoo{{version|default(xayma_odoo.version)|int}}"
-fullinstancename_db: "{{organization}}_{{instancename}}_postgres"
-defaultdomain: "{{platform_domain}}"
+# --- Kubernetes naming (RFC-1123: lowercase, alnum + '-', <=63 chars) ---
+# k8s object names cannot contain underscores (the old role's `organization`/
+# `instancename` convention allowed them) so every identity var is slugified
+# before it touches a resource name/label. Slugify: lowercase, non [a-z0-9]
+# runs collapsed to a single '-', leading/trailing '-' trimmed, truncated to
+# 63 chars (single names below stay well under that; the checks exist for
+# unusually long customer/instance names).
+customer_slug: >-
+  {{ (customer | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('-+', '-') | trim('-'))[:63] }}
+instance_slug: >-
+  {{ (instancename | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('-+', '-') | trim('-'))[:63] }}
 
-domains:
-    - "{{ domain }}"
-    - "{{instancename}}.{{ defaultdomain }}"
-    #- "www.{{ domain }}" # Deprecated
+# Derived k8s object names.
+# instance_name doubles as the namespace-scoped "base name" for the Odoo
+# Deployment/Service/ConfigMap/Secret/PVCs/IngressRoute; pg_name is the
+# per-instance Postgres StatefulSet + headless Service.
+instance_name: "{{ customer_slug }}-{{ instance_slug }}-odoo{{ version }}"
+pg_name: "{{ instance_name }}-pg"
+# One shared suspend/stop/error backend per CUSTOMER namespace (not per
+# instance) — every instance's IngressRoute in this namespace points at the
+# same busybox+ConfigMap when suspended/stopped or on a 404/50x.
+suspend_backend_name: "{{ customer_slug }}-suspend"
 
-xayma_odoo_paths:
-    instance: "{{services_path}}/{{organization}}/{{instancename}}_odoo{{version|int}}"
-    config: "{{services_path}}/{{organization}}/{{instancename}}_odoo{{version|int}}/config/"
-    logs: "{{services_path}}/{{organization}}/{{instancename}}_odoo{{version|int}}/logs/"
-    datadir: "{{services_path}}/{{organization}}/{{instancename}}_odoo{{version|int}}/webdatafolder"
+# --- Standard label block, applied to every resource this role creates ---
+# The three app.kubernetes.io/* keys match the platform-wide convention
+# (install-platform.xayma.sh CLAUDE.md); the xayma.sh/* keys are this role's
+# own addition, driving teardown-by-label and NetworkPolicy pod selectors.
+odoo_labels:
+  app.kubernetes.io/part-of: xayma-platform
+  app.kubernetes.io/managed-by: ansible
+  xayma.sh/customer: "{{ customer_slug }}"
+  xayma.sh/instance: "{{ instance_slug }}"
+  xayma.sh/odoo-version: "{{ version | string }}"
 
-    
-# TODO
-# Create a variable name 'instanceame_with_id'
+odoo_labels_odoo: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'odoo'}) }}"
+odoo_labels_postgres: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'postgres'}) }}"
+odoo_labels_snapshot: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'snapshot'}) }}"
+odoo_labels_suspend: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'suspend-backend'}) }}"
+
+# --- Stateless per-instance secret derivation ---
+# The Xayma app's extra_vars carry no per-instance password fields (this role
+# is a stateless executor — it must not persist or look anything up), so the
+# actual DB password and Odoo master password are derived deterministically
+# from a per-role vault "seed" plus the customer/instance slugs. Same idiom as
+# deploy-traefik's dashboard-basicauth bcrypt-salt trick in the platform repo:
+# deterministic input -> idempotent output, no random-per-run drift, and no
+# need to persist a generated secret anywhere.
+_odoo_db_password: "{{ (vault_odoo_db_password ~ '|' ~ customer_slug ~ '|' ~ instance_slug) | hash('sha256') }}"
+_odoo_admin_password: "{{ (vault_odoo_admin_password ~ '|' ~ customer_slug ~ '|' ~ instance_slug) | hash('sha256') }}"

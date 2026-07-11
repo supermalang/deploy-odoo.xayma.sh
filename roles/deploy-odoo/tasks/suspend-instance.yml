@@ -1,8 +1,8 @@
 ---
-- name: Start the instance (scale up, repoint IngressRoute at Odoo)
+- name: Suspend the instance (scale down, repoint IngressRoute at the suspended page)
   ansible.builtin.include_tasks: _set-instance-state.yml
   vars:
     _state_instance_slug: "{{ instance_slug }}"
     _state_instance_name: "{{ instance_name }}"
     _state_pg_name: "{{ pg_name }}"
-    _state_state: running
+    _state_state: suspended

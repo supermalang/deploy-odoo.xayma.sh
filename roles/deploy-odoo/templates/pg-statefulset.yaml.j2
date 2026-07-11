@@ -1,0 +1,84 @@
+#jinja2: lstrip_blocks: True
+---
+# Dedicated Postgres per instance (NOT the shared platform Postgres) — gives
+# per-tenant connection/resource isolation. Shape mirrors
+# install-platform.xayma.sh's deploy-databases/templates/postgres-statefulset.yaml.j2,
+# parameterized per-instance.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ pg_name }}
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_postgres | to_json }}
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+    xayma.sh/instance: {{ instance_slug }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ pg_name }}
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_postgres | to_json }}
+spec:
+  serviceName: {{ pg_name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+      xayma.sh/instance: {{ instance_slug }}
+  template:
+    metadata:
+      labels: {{ odoo_labels_postgres | to_json }}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:{{ versions.postgres }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ instance_name }}
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ instance_name }}
+                  key: DB_PASSWORD
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources: {{ plan.pg_resources | to_json }}
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "$(POSTGRES_USER)"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "$(POSTGRES_USER)"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels: {{ odoo_labels_postgres | to_json }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ odoo.storage_class }}
+        resources:
+          requests:
+            storage: {{ plan.pg_storage }}

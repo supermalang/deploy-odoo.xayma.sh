@@ -1,0 +1,26 @@
+---
+# Populates `customer_instances`: a list of {name, slug} for every Odoo
+# instance in this customer's namespace, read off the Odoo Deployments'
+# labels (xayma.sh/instance carries the slug; metadata.name is the full,
+# version-suffixed instance_name each per-instance task file needs).
+- name: "Discover all Odoo instances for customer {{ customer_slug }}"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ customer_slug }}"
+    label_selectors:
+      - "app.kubernetes.io/name=odoo"
+      - "xayma.sh/customer={{ customer_slug }}"
+  register: _customer_deployments
+
+- name: Build the customer_instances list
+  ansible.builtin.set_fact:
+    customer_instances: []
+
+- name: Collect each instance's full name + slug
+  ansible.builtin.set_fact:
+    customer_instances: >-
+      {{ customer_instances + [{'name': item.metadata.name, 'slug': item.metadata.labels['xayma.sh/instance']}] }}
+  loop: "{{ _customer_deployments.resources }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"

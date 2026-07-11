@@ -1,0 +1,76 @@
+#jinja2: lstrip_blocks: True
+---
+# Restore a snapshot identified by `snapshot_id` (the timestamp prefix
+# produced by snapshot-cronjob.yaml.j2/snapshot-job.yaml.j2) of kind
+# `snapshot_kind` (daily|adhoc). tasks/restore-instance.yml scales Odoo to 0
+# before applying this and back to 1 after it completes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ instance_slug }}-restore-{{ ansible_date_time.iso8601_basic_short | lower }}
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_snapshot | to_json }}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {{ odoo_labels_snapshot | to_json }}
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: rclone-download
+          image: rclone/rclone:{{ versions.rclone }}
+          command:
+            - /bin/sh
+            - -c
+            - >-
+              set -eu;
+              rclone copy
+              snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/{{ snapshot_kind | default('daily') }}/{{ snapshot_id }}/
+              /restore/
+          env:
+            - {name: RCLONE_CONFIG_SNAPSHOT_TYPE, value: s3}
+            - {name: RCLONE_CONFIG_SNAPSHOT_PROVIDER, value: Other}
+            - {name: RCLONE_CONFIG_SNAPSHOT_ENDPOINT, value: {{ odoo.snapshot_endpoint | to_json }}}
+            - {name: RCLONE_CONFIG_SNAPSHOT_ACL, value: private}
+          envFrom:
+            - secretRef: {name: {{ customer_slug }}-minio}
+          volumeMounts:
+            - {name: restore, mountPath: /restore}
+        - name: pg-restore
+          image: postgres:{{ versions.postgres }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              dropdb -h {{ pg_name }} -U "$POSTGRES_USER" --if-exists {{ instancename }};
+              createdb -h {{ pg_name }} -U "$POSTGRES_USER" -O "$POSTGRES_USER" {{ instancename }};
+              gunzip -c /restore/db.sql.gz | psql -h {{ pg_name }} -U "$POSTGRES_USER" {{ instancename }}
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: {name: {{ instance_name }}, key: DB_USER}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ instance_name }}, key: DB_PASSWORD}
+          volumeMounts:
+            - {name: restore, mountPath: /restore}
+      containers:
+        - name: filestore-restore
+          image: busybox:{{ versions.busybox }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              rm -rf /filestore/* /filestore/..?* /filestore/.[!.]* 2>/dev/null || true;
+              tar xzf /restore/filestore.tar.gz -C /filestore
+          volumeMounts:
+            - {name: restore, mountPath: /restore}
+            - {name: filestore, mountPath: /filestore}
+      volumes:
+        - {name: restore, emptyDir: {}}
+        - name: filestore
+          persistentVolumeClaim:
+            claimName: {{ instance_name }}-filestore

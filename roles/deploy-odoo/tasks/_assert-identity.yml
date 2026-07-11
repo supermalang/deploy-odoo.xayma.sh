@@ -1,0 +1,15 @@
+---
+# Runs for every tag (see main.yml). Fails clearly on un-sluggable input
+# rather than letting the Kubernetes API reject a malformed resource name
+# deep into a multi-manifest apply.
+- name: Assert customer/instance identity slugify cleanly to valid k8s names
+  ansible.builtin.assert:
+    that:
+      - customer_slug is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+      - instance_slug is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+      - instance_name | length <= 63
+    fail_msg: >-
+      customer ({{ customer }} -> {{ customer_slug }}) and/or instancename
+      ({{ instancename }} -> {{ instance_slug }}) don't slugify to a valid
+      RFC-1123 k8s name, or the derived instance_name ({{ instance_name }})
+      exceeds 63 characters. Use a shorter/simpler customer and instance name.

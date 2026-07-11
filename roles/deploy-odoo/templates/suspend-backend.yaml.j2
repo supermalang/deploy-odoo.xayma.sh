@@ -1,0 +1,66 @@
+#jinja2: lstrip_blocks: True
+---
+# Busybox httpd backend serving the suspended/stopped/404/50x static pages,
+# namespace-local (one per customer, shared by every instance in it) —
+# mirrors install-platform.xayma.sh's deploy-error-pages Deployment+Service
+# shape exactly. The ConfigMap (suspend-backend-html) is applied separately
+# by tasks/deploy-instance.yml via an inline `definition:`, since its data
+# comes from files/*.html via the `file` lookup (a plain Jinja include can't
+# reach the role's files/ directory) — same technique deploy-error-pages uses.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ suspend_backend_name }}
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_suspend | to_json }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: suspend-backend
+      xayma.sh/customer: {{ customer_slug }}
+  template:
+    metadata:
+      labels: {{ odoo_labels_suspend | to_json }}
+    spec:
+      containers:
+        - name: suspend-backend
+          image: busybox:{{ versions.busybox }}
+          command: ["httpd", "-f", "-v", "-p", "80", "-h", "/www"]
+          ports:
+            - name: http
+              containerPort: 80
+          volumeMounts:
+            - name: html
+              mountPath: /www
+              readOnly: true
+          readinessProbe:
+            httpGet: {path: /suspended.html, port: 80}
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /suspended.html, port: 80}
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 50m, memory: 32Mi}
+      volumes:
+        - name: html
+          configMap:
+            name: {{ suspend_backend_name }}-html
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ suspend_backend_name }}
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_suspend | to_json }}
+spec:
+  selector:
+    app.kubernetes.io/name: suspend-backend
+    xayma.sh/customer: {{ customer_slug }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

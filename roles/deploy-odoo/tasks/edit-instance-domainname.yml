@@ -1,12 +1,43 @@
 ---
-- name: Updating the Nginx vHost file
-  template:
-    src: reverse-proxy.conf.j2
-    dest: "{{ nginx_config_volume_path }}/{{ fullinstancename }}.conf"
-    mode: '0644'
-  notify:
-      - reload_nginx_service
-  when: instancename != xayma_odoo.instancename and ( organization != "" and organization != xayma_odoo.organization ) and instancename != domain  
-  # We make sure the user has provided an instance name 
-  # and he has provided an organization
-  # and the new domain name for that instance
+# Changes the instance's domain without disturbing its current
+# running/suspended/stopped state (read off the live IngressRoute first,
+# same recovery technique as _set-instance-state.yml).
+- name: Fetch the current IngressRoute
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: IngressRoute
+    api_version: traefik.io/v1alpha1
+    namespace: "{{ customer_slug }}"
+    name: "{{ instance_name }}"
+  register: _edit_ingressroute
+
+- name: Assert the IngressRoute exists
+  ansible.builtin.assert:
+    that: _edit_ingressroute.resources | length > 0
+    fail_msg: "No IngressRoute {{ instance_name }} in {{ customer_slug }} - has this instance been deployed?"
+
+- name: Determine the instance's current state from its live middlewares
+  ansible.builtin.set_fact:
+    _edit_current_middlewares: >-
+      {{ _edit_ingressroute.resources[0].spec.routes[0].middlewares | default([]) | map(attribute='name') | list }}
+
+- name: Preserve the current running/suspended/stopped state across the domain change
+  ansible.builtin.set_fact:
+    instance_state: >-
+      {{ 'suspended' if (instance_name ~ '-suspended') in _edit_current_middlewares
+         else ('stopped' if (instance_name ~ '-stopped') in _edit_current_middlewares
+         else 'running') }}
+
+- name: Reapply the TLS Certificate for the new domain
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: certificate.yaml.j2
+
+- name: "Reapply the IngressRoute for the new domain ({{ instance_state }})"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: ingressroute.yaml.j2

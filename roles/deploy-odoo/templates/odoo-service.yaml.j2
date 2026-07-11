@@ -1,0 +1,21 @@
+#jinja2: lstrip_blocks: True
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ instance_name }}
+  namespace: {{ customer_slug }}
+  labels: {{ odoo_labels_odoo | to_json }}
+spec:
+  selector:
+    app.kubernetes.io/name: odoo
+    xayma.sh/instance: {{ instance_slug }}
+  ports:
+    - name: http
+      port: 8069
+      targetPort: 8069
+{% if plan.workers | int > 0 %}
+    - name: longpolling
+      port: 8072
+      targetPort: 8072
+{% endif %}

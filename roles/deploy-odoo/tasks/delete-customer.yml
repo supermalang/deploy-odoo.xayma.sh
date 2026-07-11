@@ -1,0 +1,11 @@
+---
+# Whole-customer teardown = delete the namespace; everything in it (every
+# instance's Deployments/StatefulSets/PVCs/Secrets/IngressRoutes/etc, plus
+# the shared suspend-backend) goes with it.
+- name: "Delete the customer namespace {{ customer_slug }} (and everything in it)"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ customer_slug }}"

@@ -1,22 +1,53 @@
 ---
-# tasks file for deploy-odoo
-- import_tasks: 0-register-platform-defaults.yml
-  tags: deployodoo, stopinstance, restartinstance, suspendinstance, startinstance, editinstancedomainname
+# tasks file for deploy-odoo (k3s)
+#
+# Instance scope: deployinstance, startinstance, stopinstance, suspendinstance,
+#                 restartinstance, editinstancedomainname, deleteinstance,
+#                 snapshotinstance, restoreinstance
+# Customer scope: startcustomer, stopcustomer, suspendcustomer, deletecustomer
+#                 (loop over every instance matching xayma.sh/customer=X)
 
-- import_tasks: deploy-odoo.yml
-  tags: deployodoo
+- import_tasks: _assert-identity.yml
+  tags: always
 
-#- import_tasks: add-vhost.yml
-#  tags: deployodoo
+- import_tasks: _assert-plan.yml
+  tags: [deployinstance, restartinstance, snapshotinstance]
 
-- import_tasks: stop-instance.yml
-  tags: stopinstance, suspendinstance
+- import_tasks: deploy-instance.yml
+  tags: deployinstance
 
 - import_tasks: start-instance.yml
   tags: startinstance
+
+- import_tasks: stop-instance.yml
+  tags: stopinstance
+
+- import_tasks: suspend-instance.yml
+  tags: suspendinstance
 
 - import_tasks: restart-instance.yml
   tags: restartinstance
 
 - import_tasks: edit-instance-domainname.yml
   tags: editinstancedomainname
+
+- import_tasks: delete-instance.yml
+  tags: deleteinstance
+
+- import_tasks: snapshot-instance.yml
+  tags: snapshotinstance
+
+- import_tasks: restore-instance.yml
+  tags: restoreinstance
+
+- import_tasks: start-customer.yml
+  tags: startcustomer
+
+- import_tasks: stop-customer.yml
+  tags: stopcustomer
+
+- import_tasks: suspend-customer.yml
+  tags: suspendcustomer
+
+- import_tasks: delete-customer.yml
+  tags: deletecustomer

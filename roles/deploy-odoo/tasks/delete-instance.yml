@@ -1,0 +1,29 @@
+---
+# Teardown by label (xayma.sh/customer + xayma.sh/instance) across every kind
+# this role creates for a single instance. Deliberately does NOT touch the
+# customer-scoped suspend-backend or MinIO Secret (shared by other instances
+# in the same namespace) or the namespace itself.
+- name: Delete all resources for this instance, by label
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: absent
+    namespace: "{{ customer_slug }}"
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    label_selectors:
+      - "xayma.sh/customer={{ customer_slug }}"
+      - "xayma.sh/instance={{ instance_slug }}"
+  loop:
+    - {api_version: batch/v1, kind: CronJob}
+    - {api_version: traefik.io/v1alpha1, kind: IngressRoute}
+    - {api_version: traefik.io/v1alpha1, kind: Middleware}
+    - {api_version: cert-manager.io/v1, kind: Certificate}
+    - {api_version: networking.k8s.io/v1, kind: NetworkPolicy}
+    - {api_version: v1, kind: Service}
+    - {api_version: apps/v1, kind: Deployment}
+    - {api_version: apps/v1, kind: StatefulSet}
+    - {api_version: v1, kind: ConfigMap}
+    - {api_version: v1, kind: Secret}
+    - {api_version: v1, kind: PersistentVolumeClaim}
+  loop_control:
+    label: "{{ item.kind }}"

@@ -1,0 +1,45 @@
+---
+# Required for deployinstance/restartinstance/snapshotinstance only (see
+# main.yml). This role is a stateless executor: it ships NO `plans:` dict and
+# does not look anything up — the Xayma app resolves the plan and passes it
+# whole in extra_vars. We only assert the contract is met, then template it.
+- name: Assert the app-supplied plan object carries every required key
+  ansible.builtin.assert:
+    that:
+      - plan is defined
+      - plan.workers is defined
+      - plan.db_maxconn is defined
+      - plan.mem_soft is defined
+      - plan.mem_hard is defined
+      - plan.max_cron_threads is defined
+      - plan.odoo_resources is defined
+      - plan.odoo_resources.requests is defined
+      - plan.odoo_resources.limits is defined
+      - plan.pg_resources is defined
+      - plan.pg_resources.requests is defined
+      - plan.pg_resources.limits is defined
+      - plan.filestore_storage is defined
+      - plan.pg_storage is defined
+      - plan.snapshots is defined
+      - plan.snapshots.daily_enabled is defined
+      - plan.snapshots.daily_schedule is defined
+      - plan.snapshots.daily_retention is defined
+      - plan.snapshots.adhoc_allowed is defined
+      - plan.snapshots.adhoc_retention is defined
+    fail_msg: >-
+      extra_vars.plan is missing required keys. This role does not fall back
+      to a local plans dict — the Xayma app (or the manual-run survey) must
+      supply a fully-resolved plan object. See README.md for the full
+      plan.* contract.
+
+- name: Assert this role's own vault secrets are set
+  ansible.builtin.assert:
+    that:
+      - vault_odoo_db_password | default('') | length > 0
+      - vault_odoo_admin_password | default('') | length > 0
+      - vault_odoo_minio_access_key | default('') | length > 0
+      - vault_odoo_minio_secret_key | default('') | length > 0
+    fail_msg: >-
+      One or more vault_odoo_* secrets are unset. Copy
+      defaults/main/02-credentials.yml.example, fill it in, and encrypt it
+      with ansible-vault as defaults/main/02-credentials.yml.

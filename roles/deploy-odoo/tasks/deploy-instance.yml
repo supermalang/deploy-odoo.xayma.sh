@@ -1,0 +1,115 @@
+---
+- name: Create/update the customer namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    template: namespace.yaml.j2
+
+- name: Apply instance + MinIO Secrets
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: secrets.yaml.j2
+  no_log: true
+
+- name: Apply the odoo.conf ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: odoo-configmap.yaml.j2
+
+- name: Apply the filestore + addons PVCs
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: pvcs.yaml.j2
+
+- name: Apply the per-instance Postgres Service + StatefulSet
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: pg-statefulset.yaml.j2
+
+- name: Apply the Odoo Deployment
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: odoo-deployment.yaml.j2
+
+- name: Apply the Odoo Service
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: odoo-service.yaml.j2
+
+# Shared per-customer suspend/stop/error backend. The ConfigMap's data comes
+# from files/*.html via the `file` lookup (Jinja `{% include %}` can't reach
+# the role's files/ dir), so it's applied inline here with `definition:`,
+# same technique as install-platform.xayma.sh's deploy-error-pages role.
+- name: Apply the suspend-backend HTML ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ suspend_backend_name }}-html"
+        namespace: "{{ customer_slug }}"
+        labels: "{{ odoo_labels_suspend }}"
+      data:
+        suspended.html: "{{ lookup('file', role_path + '/files/suspended.html') }}"
+        stopped.html: "{{ lookup('file', role_path + '/files/stopped.html') }}"
+        404.html: "{{ lookup('file', role_path + '/files/404.html') }}"
+        50x.html: "{{ lookup('file', role_path + '/files/50x.html') }}"
+
+- name: Apply the shared suspend-backend Deployment + Service
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: suspend-backend.yaml.j2
+
+- name: Apply the instance's Traefik Middlewares (errors + suspended/stopped rewrites)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: middlewares.yaml.j2
+
+- name: Apply the instance TLS Certificate
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: certificate.yaml.j2
+
+- name: Apply the instance IngressRoute (running)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: ingressroute.yaml.j2
+  vars:
+    instance_state: running
+
+- name: Apply the instance's NetworkPolicies
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: networkpolicies.yaml.j2
+
+- name: Apply the daily snapshot CronJob
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ customer_slug }}"
+    template: snapshot-cronjob.yaml.j2
+  when: plan.snapshots.daily_enabled | bool

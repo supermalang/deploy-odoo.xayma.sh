@@ -1,15 +1,8 @@
 ---
-- name: Stoping Odoo instance
-  docker_compose:
-    project_src: "{{ xayma_odoo_paths.instance }}"
-    state: absent
-  when: instancename != xayma_odoo.instancename # We make sure the user has provided an instance name
-
-
-#- name: Updating the Nginx vHost file
-#  template:
-#    src: reverse-proxy-stop-site.conf.j2
-#    dest: "{{ nginx_config_volume_path }}/{{ fullinstancename }}.conf"
-#    mode: '0644'
-#  notify:
-#      - reload_nginx_service
+- name: Stop the instance (scale down, repoint IngressRoute at the stopped page)
+  ansible.builtin.include_tasks: _set-instance-state.yml
+  vars:
+    _state_instance_slug: "{{ instance_slug }}"
+    _state_instance_name: "{{ instance_name }}"
+    _state_pg_name: "{{ pg_name }}"
+    _state_state: stopped
