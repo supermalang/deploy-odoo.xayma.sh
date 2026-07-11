@@ -1,0 +1,36 @@
+{
+  "name": "deploy-odoo Ansible",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
+  },
+  // Runs on the HOST before the container starts: seed the gitignored
+  // secrets.env from the committed template if it doesn't exist yet, so the
+  // --env-file mount below never fails on a fresh checkout.
+  "initializeCommand": "test -f .devcontainer/secrets.env || cp .devcontainer/secrets.env.example .devcontainer/secrets.env",
+  // Load CLAUDE_CODE_OAUTH_TOKEN / GH_TOKEN etc. from the (gitignored) secrets file.
+  // Path is relative to the workspace folder on the host.
+  "runArgs": [
+    "--env-file",
+    ".devcontainer/secrets.env"
+  ],
+  "postCreateCommand": ".devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "redhat.ansible",
+        "redhat.vscode-yaml"
+      ],
+      "settings": {
+        "files.associations": {
+          "*.yml": "ansible",
+          "site.yml": "ansible"
+        }
+      }
+    }
+  },
+  "remoteUser": "vscode"
+}
