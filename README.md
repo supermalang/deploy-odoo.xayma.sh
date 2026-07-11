@@ -150,6 +150,13 @@ Known caveats
   ad-hoc snapshots may exist at once, checked before dumping anything;
   `adhoc_retention` is the separate keep-newest-N pruned after a successful
   upload. Set `adhoc_retention <= adhoc_allowed`.
+- `deployinstance` does not initialize the base database (no `-i base` job).
+  A freshly deployed instance has an empty Postgres with no usable DB until
+  initialized out-of-band — this matches the old Docker-based role's
+  behavior. `list_db = False` + `dbfilter` in `odoo.conf.j2` mean the
+  `/web/database/manager` selector is disabled, so initialization must be
+  driven some other way (e.g. a one-off `odoo -i base -d <instance_slug>`
+  run, or a restore of an existing snapshot via `restoreinstance`).
 
 Requirements
 ------------

@@ -32,7 +32,7 @@ spec:
                 - -c
                 - >-
                   set -eu;
-                  pg_dump -h {{ pg_name }} -U "$POSTGRES_USER" {{ instancename }}
+                  pg_dump -h {{ pg_name }} -U "$POSTGRES_USER" {{ instance_slug }}
                   | gzip > /dump/db.sql.gz
               env:
                 - name: POSTGRES_USER
@@ -59,11 +59,14 @@ spec:
                   set -eu;
                   ts=$(date +%Y-%m-%dT%H-%M-%S);
                   rclone copy /dump snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/daily/$ts/;
-                  rclone lsf --dirs-only snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/daily/
-                  | sort | head -n -{{ plan.snapshots.daily_retention }}
-                  | while read -r d; do
+                  dirs=$(rclone lsf --dirs-only snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/daily/ | sort);
+                  total=$(printf '%s\n' "$dirs" | grep -c . || true);
+                  excess=$(( total - {{ plan.snapshots.daily_retention }} ));
+                  if [ "$excess" -gt 0 ]; then
+                  printf '%s\n' "$dirs" | head -n "$excess" | while read -r d; do
                   [ -n "$d" ] && rclone purge "snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/daily/$d";
-                  done
+                  done;
+                  fi
               env:
                 - {name: RCLONE_CONFIG_SNAPSHOT_TYPE, value: s3}
                 - {name: RCLONE_CONFIG_SNAPSHOT_PROVIDER, value: Other}

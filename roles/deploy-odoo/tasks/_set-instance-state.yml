@@ -43,12 +43,13 @@
     that: _state_ingressroute.resources | length > 0
     fail_msg: "No IngressRoute {{ _state_instance_name }} in {{ customer_slug }} - has this instance been deployed?"
 
-- name: "[{{ _state_instance_slug }}] Recover the Host(...) match + longpolling flag"
+- name: "[{{ _state_instance_slug }}] Recover the Host + longpolling flag"
   ansible.builtin.set_fact:
-    _state_domain_match: >-
+    _state_domain: >-
       {{ _state_ingressroute.resources[0].spec.routes
-         | selectattr('match', 'search', '^Host')
-         | map(attribute='match') | first }}
+         | map(attribute='match') | select('search', 'Host\(')
+         | map('regex_search', 'Host\(`([^`]+)`\)', '\1') | map('first')
+         | first }}
     _state_has_longpolling: >-
       {{ (_state_ingressroute.resources[0].spec.routes
           | selectattr('match', 'search', 'longpolling') | list | length) > 0 }}
@@ -63,7 +64,7 @@
     instance_name: "{{ _state_instance_name }}"
     instance_slug: "{{ _state_instance_slug }}"
     instance_state: "{{ _state_state }}"
-    domain: "{{ _state_domain_match | regex_replace('^Host\\(`(.*)`\\)$', '\\1') }}"
+    domain: "{{ _state_domain }}"
     plan:
       workers: "{{ 1 if (_state_has_longpolling | bool) else 0 }}"
     odoo_labels_odoo: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'odoo', 'xayma.sh/instance': _state_instance_slug}) }}"

@@ -44,9 +44,9 @@ spec:
             - -c
             - >-
               set -eu;
-              dropdb -h {{ pg_name }} -U "$POSTGRES_USER" --if-exists {{ instancename }};
-              createdb -h {{ pg_name }} -U "$POSTGRES_USER" -O "$POSTGRES_USER" {{ instancename }};
-              gunzip -c /restore/db.sql.gz | psql -h {{ pg_name }} -U "$POSTGRES_USER" {{ instancename }}
+              dropdb -h {{ pg_name }} -U "$POSTGRES_USER" --if-exists {{ instance_slug }};
+              createdb -h {{ pg_name }} -U "$POSTGRES_USER" -O "$POSTGRES_USER" {{ instance_slug }};
+              gunzip -c /restore/db.sql.gz | psql -h {{ pg_name }} -U "$POSTGRES_USER" {{ instance_slug }}
           env:
             - name: POSTGRES_USER
               valueFrom:

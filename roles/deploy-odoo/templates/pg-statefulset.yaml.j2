@@ -64,12 +64,12 @@ spec:
           resources: {{ plan.pg_resources | to_json }}
           readinessProbe:
             exec:
-              command: ["pg_isready", "-U", "$(POSTGRES_USER)"]
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\""]
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             exec:
-              command: ["pg_isready", "-U", "$(POSTGRES_USER)"]
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\""]
             initialDelaySeconds: 30
             periodSeconds: 15
   volumeClaimTemplates:

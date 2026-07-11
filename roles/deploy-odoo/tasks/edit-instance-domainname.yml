@@ -21,6 +21,12 @@
     _edit_current_middlewares: >-
       {{ _edit_ingressroute.resources[0].spec.routes[0].middlewares | default([]) | map(attribute='name') | list }}
 
+- name: Recover the longpolling flag from the live IngressRoute
+  ansible.builtin.set_fact:
+    _edit_has_longpolling: >-
+      {{ (_edit_ingressroute.resources[0].spec.routes
+          | selectattr('match', 'search', 'longpolling') | list | length) > 0 }}
+
 - name: Preserve the current running/suspended/stopped state across the domain change
   ansible.builtin.set_fact:
     instance_state: >-
@@ -41,3 +47,6 @@
     state: present
     namespace: "{{ customer_slug }}"
     template: ingressroute.yaml.j2
+  vars:
+    plan:
+      workers: "{{ 1 if (_edit_has_longpolling | bool) else 0 }}"
