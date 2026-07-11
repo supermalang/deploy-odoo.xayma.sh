@@ -34,13 +34,14 @@
 # the allow-edge-to-suspend-backend NetworkPolicy) and the namespace itself
 # would otherwise be left orphaned — nothing else in this role tears those
 # down. Deleting the namespace cascades away everything in one atomic op.
-- name: "Check for any remaining Odoo instances in {{ customer_slug }}"
+- name: "Check for any OTHER Odoo instances in {{ customer_slug }}"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Deployment
     namespace: "{{ customer_slug }}"
     label_selectors:
       - "app.kubernetes.io/name=odoo"
+      - "xayma.sh/instance!={{ instance_slug }}"
   register: _remaining_odoo_deployments
 
 - name: "Delete the customer namespace {{ customer_slug }} (no instances remain)"
