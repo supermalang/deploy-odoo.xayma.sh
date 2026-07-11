@@ -4,11 +4,13 @@
 # Dispatch is driven by a single `action` extra-var (AWX surveys set
 # extra_vars, not --tags — see README.md "Actions").
 #
+# This role is strictly instance-scoped: every action operates on exactly one
+# instance. Customer-level operations (e.g. suspend every instance for a
+# customer) are orchestrated by the Xayma app, which loops this Job Template
+# over the customer's active instances.
+#
 # Instance scope: deploy, start, stop, suspend, restart, edit-domain, delete,
 #                 snapshot, restore
-# Customer scope: start-customer, stop-customer, suspend-customer,
-#                 delete-customer (loop over every instance matching
-#                 xayma.sh/customer=X)
 
 - import_tasks: _assert-identity.yml
 
@@ -16,9 +18,8 @@
   ansible.builtin.assert:
     that: action is defined and action in [
             'deploy','start','stop','suspend','restart','edit-domain','delete',
-            'snapshot','restore','start-customer','stop-customer',
-            'suspend-customer','delete-customer']
-    fail_msg: "Set -e action=<one of: deploy|start|stop|suspend|restart|edit-domain|delete|snapshot|restore|start-customer|stop-customer|suspend-customer|delete-customer>"
+            'snapshot','restore']
+    fail_msg: "Set -e action=<one of: deploy|start|stop|suspend|restart|edit-domain|delete|snapshot|restore>"
 
 - import_tasks: _assert-plan.yml
   when: action in ['deploy', 'restart', 'snapshot']
@@ -49,15 +50,3 @@
 
 - import_tasks: restore-instance.yml
   when: action == 'restore'
-
-- import_tasks: start-customer.yml
-  when: action == 'start-customer'
-
-- import_tasks: stop-customer.yml
-  when: action == 'stop-customer'
-
-- import_tasks: suspend-customer.yml
-  when: action == 'suspend-customer'
-
-- import_tasks: delete-customer.yml
-  when: action == 'delete-customer'

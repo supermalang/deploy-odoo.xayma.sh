@@ -1,16 +1,14 @@
 ---
-# include_tasks target (not import_tasks — this gets looped for customer-scope
-# actions). Required params:
+# include_tasks target (not import_tasks) shared by start/stop/suspend for a
+# single instance. Required params:
 #   _state_instance_slug, _state_instance_name, _state_pg_name, _state_state
 #     (_state_state: running | suspended | stopped)
 #
 # Scales Odoo+PG via k8s_scale, then re-points the instance's IngressRoute.
 # The Host(...) match and whether a longpolling route exists are recovered
 # from the LIVE IngressRoute rather than needing the original `domain`/`plan`
-# again (customer-scope loops only know the instance's slug+name, discovered
-# from labels — see discover-customer-instances.yml) — so this one file works
-# identically whether called for a single instance or looped over a whole
-# customer.
+# passed back in — start/stop/suspend only receive `action`+identity vars,
+# not the instance's domain or plan.
 - name: "[{{ _state_instance_slug }}] Scale the Odoo Deployment"
   kubernetes.core.k8s_scale:
     kubeconfig: "{{ kubeconfig_path }}"

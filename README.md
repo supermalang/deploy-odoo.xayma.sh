@@ -103,21 +103,24 @@ surveys set `extra_vars`, so a single Job Template + survey can drive every
 action below). The role fails fast with a clear message if `action` is
 missing or not one of these values.
 
-| `action` | Scope | Description |
-|-----|-------|-------------|
-| `deploy` | instance | Create/update an instance (namespace, Postgres, Odoo, ingress, network policies, snapshot CronJob) |
-| `start` | instance | Scale up, repoint the IngressRoute at Odoo |
-| `stop` | instance | Scale down, repoint the IngressRoute at the stopped page |
-| `suspend` | instance | Scale down, repoint the IngressRoute at the suspended page |
-| `restart` | instance | Reapply config/Deployment/StatefulSet, then force pod recreation |
-| `edit-domain` | instance | Change the domain, preserving the current running/suspended/stopped state |
-| `delete` | instance | Delete every resource labelled for this instance |
-| `snapshot` | instance | Trigger an ad-hoc snapshot (subject to `adhoc_allowed`/`adhoc_retention`) |
-| `restore` | instance | Restore a snapshot (`snapshot_id`, optional `snapshot_kind`) |
-| `start-customer` | customer | Start every instance for the customer |
-| `stop-customer` | customer | Stop every instance for the customer |
-| `suspend-customer` | customer | Suspend every instance for the customer |
-| `delete-customer` | customer | Delete the customer's entire namespace |
+This role is **strictly instance-scoped**: every action operates on exactly
+one instance, never more. Customer-level operations (e.g. suspending every
+instance for a customer that hasn't paid) are orchestrated by the Xayma app,
+which loops this same instance-scoped Job Template over every active
+instance belonging to that customer — the role itself carries no
+multi-instance action and never will.
+
+| `action` | Description |
+|-----|-------------|
+| `deploy` | Create/update an instance (namespace, Postgres, Odoo, ingress, network policies, snapshot CronJob) |
+| `start` | Scale up, repoint the IngressRoute at Odoo |
+| `stop` | Scale down, repoint the IngressRoute at the stopped page |
+| `suspend` | Scale down, repoint the IngressRoute at the suspended page |
+| `restart` | Reapply config/Deployment/StatefulSet, then force pod recreation |
+| `edit-domain` | Change the domain, preserving the current running/suspended/stopped state |
+| `delete` | Delete every resource labelled for this instance; if it was the last instance in the customer namespace, also delete the namespace (and with it the shared suspend-backend/MinIO Secret) |
+| `snapshot` | Trigger an ad-hoc snapshot (subject to `adhoc_allowed`/`adhoc_retention`) |
+| `restore` | Restore a snapshot (`snapshot_id`, optional `snapshot_kind`) |
 
 CLI examples:
 
@@ -133,31 +136,30 @@ ansible-playbook site.yml -i production \
   -e domain=laundromat.supermalang.com -e version=19 \
   -e '{"plan": { ... }}' \
   --vault-password-file vault_password -K
-
-# Customer-scope action (no instancename/domain/version needed)
-ansible-playbook site.yml -i production \
-  -e action=suspend-customer -e customer=supermalang \
-  --vault-password-file vault_password -K
 ```
 
 ### AWX
 
-Run this role from **one** AWX Job Template rather than one per action:
+Run this role from **one instance-scoped** AWX Job Template — there is no
+customer-scope Job Template; the Xayma app loops this one over a customer's
+active instances when it needs to act on all of them.
 
-- Job Template → **Variables**: set to *Prompt on launch*. This lets the
-  Xayma app pass `action`, the identity vars (`customer`/`instancename`/
-  `domain`/`version`), and — for `deploy`/`restart`/`snapshot` — the nested
-  `plan` object, all as `extra_vars` via the AWX API on every launch.
+- Job Template → **Variables**: leave empty, set to *Prompt on launch*. This
+  lets the Xayma app pass `action`, the identity vars, and — for
+  `deploy`/`restart`/`snapshot` — the nested `plan` object, all as
+  `extra_vars` via the AWX API on every launch.
 - Add a **survey** for manual/testing runs from the AWX UI, with fields:
-  - `action` — multiple choice, one of the values in the table above
-  - `customer` — text
-  - `instancename` — text
-  - `domain` — text
-  - `version` — text
-  - The `plan` object can't be a flat survey field. For a manual
-    `deploy`/`restart`/`snapshot` run, add a `plan` **Textarea** survey field
-    and paste in the JSON by hand (or just drive those three actions from the
-    Xayma app, which always supplies `plan` itself).
+  - `action` — Multiple Choice, **required**, one of the 9 values in the
+    table above
+  - `instancename` — Text, **required**
+  - `customer` — Text, **required**
+  - `version` — required, default e.g. `"19"`
+  - `domain` — optional; when unset the role derives
+    `<instancename>.<platform_domain>` (see `defaults/main/01-deploy-odoo-defaults.yml`)
+  - `plan` — Textarea/JSON; **required** for `deploy`/`restart`/`snapshot`,
+    **no default** — a missing plan must fail loudly via `_assert-plan.yml`,
+    never silently deploy with the wrong sizing
+  - `snapshot_id` / `snapshot_kind` — for `restore`
 
 Snapshots
 ---------

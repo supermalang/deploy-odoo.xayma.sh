@@ -1,8 +1,9 @@
 ---
 # Teardown by label (xayma.sh/customer + xayma.sh/instance) across every kind
-# this role creates for a single instance. Deliberately does NOT touch the
-# customer-scoped suspend-backend or MinIO Secret (shared by other instances
-# in the same namespace) or the namespace itself.
+# this role creates for a single instance. Does NOT touch the customer-scoped
+# suspend-backend or MinIO Secret directly (shared by other instances in the
+# same namespace) — those only go away below, and only once this was the last
+# instance standing.
 - name: Delete all resources for this instance, by label
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -27,3 +28,26 @@
     - {api_version: v1, kind: PersistentVolumeClaim}
   loop_control:
     label: "{{ item.kind }}"
+
+# If that was the last instance in the namespace, the shared per-customer
+# resources (suspend-backend Deployment/Service/ConfigMap, the MinIO Secret,
+# the allow-edge-to-suspend-backend NetworkPolicy) and the namespace itself
+# would otherwise be left orphaned — nothing else in this role tears those
+# down. Deleting the namespace cascades away everything in one atomic op.
+- name: "Check for any remaining Odoo instances in {{ customer_slug }}"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ customer_slug }}"
+    label_selectors:
+      - "app.kubernetes.io/name=odoo"
+  register: _remaining_odoo_deployments
+
+- name: "Delete the customer namespace {{ customer_slug }} (no instances remain)"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: absent
+    api_version: v1
+    kind: Namespace
+    name: "{{ customer_slug }}"
+  when: _remaining_odoo_deployments.resources | length == 0

@@ -25,7 +25,7 @@ xayma_odoo:
 customer: "{{ xayma_odoo.organization }}"
 instancename: "{{ xayma_odoo.instancename }}"
 version: "{{ xayma_odoo.version }}"
-domain: "{{ instancename }}"
+domain: "{{ instance_slug }}.{{ platform_domain }}"
 
 # --- Platform-wide seam vars ---
 # Same contract as install-platform.xayma.sh's group_vars/all/main.yml, kept
