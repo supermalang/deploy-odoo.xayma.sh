@@ -21,6 +21,7 @@
   "customizations": {
     "vscode": {
       "extensions": [
+        "anthropic.claude-code",
         "redhat.ansible",
         "redhat.vscode-yaml"
       ],
