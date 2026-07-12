@@ -105,6 +105,7 @@ overrides them per-instance):
 | `plan_daily_retention` | `7` | Max daily snapshots kept (oldest pruned) |
 | `plan_adhoc_allowed` | `5` | Quota: max ad-hoc snapshots that may exist at once |
 | `plan_adhoc_retention` | `3` | Max ad-hoc snapshots kept (oldest pruned) |
+| `plan_init_modules` | `"base"` | Comma-separated (no spaces) module list for the first-deploy `-i` init, e.g. `"base,my_module"`; custom modules must exist in the addons path |
 
 `odoo_action=restore` additionally requires `snapshot_id` (the timestamp prefix
 of the snapshot to restore) and accepts optional `snapshot_kind`
@@ -178,7 +179,9 @@ active instances when it needs to act on all of them.
   - Text fields: `plan_odoo_cpu_request`, `plan_odoo_mem_request`,
     `plan_odoo_cpu_limit`, `plan_odoo_mem_limit`, `plan_pg_cpu_request`,
     `plan_pg_mem_request`, `plan_pg_cpu_limit`, `plan_pg_mem_limit`,
-    `plan_filestore_storage`, `plan_pg_storage`, `plan_daily_schedule`
+    `plan_filestore_storage`, `plan_pg_storage`, `plan_daily_schedule`,
+    `plan_init_modules` (default `"base"`; comma-separated, no spaces —
+    custom modules must exist in the addons path)
   - `plan_daily_enabled` — Multiple Choice (`"true"`/`"false"`), consumed via
     `| bool` since AWX surveys have no boolean type
   - `snapshot_id` / `snapshot_kind` — for `restore`
@@ -224,13 +227,18 @@ Known caveats
   ad-hoc snapshots may exist at once, checked before dumping anything;
   `adhoc_retention` is the separate keep-newest-N pruned after a successful
   upload. Set `adhoc_retention <= adhoc_allowed`.
-- `odoo_action=deploy` does not initialize the base database (no `-i base` job).
-  A freshly deployed instance has an empty Postgres with no usable DB until
-  initialized out-of-band — this matches the old Docker-based role's
-  behavior. `list_db = False` + `dbfilter` in `odoo.conf.j2` mean the
-  `/web/database/manager` selector is disabled, so initialization must be
-  driven some other way (e.g. a one-off `odoo -i base -d <instance_slug>`
-  run, or a restore of an existing snapshot via `odoo_action=restore`).
+- A fresh `odoo_action=deploy` now auto-initializes the database on first
+  boot: the Odoo container's entrypoint waits for Postgres, checks whether
+  `{{ instance_slug }}`'s database already exists, and if not runs
+  `odoo -i {{ plan_init_modules }} --stop-after-init` (default `base`) then
+  sets the `base.user_admin` password to the instance's `ADMIN_PASSWD`
+  secret before serving. This guard only fires when the database is absent,
+  so re-deploys/restarts never re-init an existing DB. `list_db = False` +
+  `dbfilter` in `odoo.conf.j2` still keep the `/web/database/manager`
+  selector disabled — login is `admin` / `<ADMIN_PASSWD>` (from the instance
+  Secret), not a manually-chosen password. Restoring an existing snapshot
+  (`odoo_action=restore`) is unaffected — the DB already exists by the time
+  the guard checks.
 
 Requirements
 ------------

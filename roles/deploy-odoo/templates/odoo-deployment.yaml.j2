@@ -52,6 +52,25 @@ spec:
             - name: longpolling
               containerPort: 8072
 {% endif %}
+          envFrom:
+            - secretRef:
+                name: {{ instance_name }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -eu
+              export PGPASSWORD="$DB_PASSWORD"
+              until psql -h {{ pg_name }} -U "$DB_USER" -d postgres -c 'SELECT 1' >/dev/null 2>&1; do
+                echo "waiting for postgres..."; sleep 2;
+              done
+              if ! psql -h {{ pg_name }} -U "$DB_USER" -d postgres -tAc \
+                  "SELECT 1 FROM pg_database WHERE datname='{{ instance_slug }}'" | grep -q 1; then
+                echo "initializing {{ instance_slug }}..."
+                odoo -c /etc/odoo/odoo.conf -d {{ instance_slug }} -i {{ plan_init_modules }} --without-demo=all --stop-after-init
+                echo "env.ref('base.user_admin').write({'password': __import__('os').environ['ADMIN_PASSWD']}); env.cr.commit()" \
+                  | odoo shell -c /etc/odoo/odoo.conf -d {{ instance_slug }}
+              fi
+              exec odoo -c /etc/odoo/odoo.conf
           volumeMounts:
             - name: etc-odoo
               mountPath: /etc/odoo
@@ -66,6 +85,12 @@ spec:
             limits:
               cpu: "{{ plan_odoo_cpu_limit }}"
               memory: "{{ plan_odoo_mem_limit }}"
+          startupProbe:
+            httpGet:
+              path: /web/login
+              port: 8069
+            periodSeconds: 10
+            failureThreshold: 60      # ~10 min budget for first init + first serve
           readinessProbe:
             httpGet:
               path: /web/login

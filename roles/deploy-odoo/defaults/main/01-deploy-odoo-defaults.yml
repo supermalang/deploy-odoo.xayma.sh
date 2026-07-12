@@ -63,6 +63,7 @@ plan_daily_schedule: "0 3 * * *"
 plan_daily_retention: 7
 plan_adhoc_allowed: 5
 plan_adhoc_retention: 3
+plan_init_modules: "base"          # comma-separated, NO spaces, e.g. "base,my_module" — first-deploy `-i` list
 
 # --- Role-owned, non-plan defaults ---
 odoo:
