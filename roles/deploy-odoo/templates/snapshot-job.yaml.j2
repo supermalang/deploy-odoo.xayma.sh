@@ -1,9 +1,9 @@
 #jinja2: lstrip_blocks: True
 ---
 # Ad-hoc snapshot, triggered by `odoo_action=snapshot`. Enforces
-# plan.snapshots.adhoc_allowed as a hard quota (checked BEFORE dumping
+# plan_adhoc_allowed as a hard quota (checked BEFORE dumping
 # anything, in its own initContainer, so an over-quota trigger fails fast
-# without wasting a dump) and prunes to plan.snapshots.adhoc_retention after
+# without wasting a dump) and prunes to plan_adhoc_retention after
 # a successful upload — under snapshots/{customer}/{instance}/adhoc/.
 apiVersion: batch/v1
 kind: Job
@@ -29,8 +29,8 @@ spec:
               count=$(rclone lsf --dirs-only
               snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/adhoc/
               2>/dev/null | wc -l);
-              if [ "$count" -ge {{ plan.snapshots.adhoc_allowed }} ]; then
-              echo "ad-hoc snapshot quota reached ($count/{{ plan.snapshots.adhoc_allowed }}) - refusing";
+              if [ "$count" -ge {{ plan_adhoc_allowed }} ]; then
+              echo "ad-hoc snapshot quota reached ($count/{{ plan_adhoc_allowed }}) - refusing";
               exit 1;
               fi
           env:
@@ -76,7 +76,7 @@ spec:
               rclone copy /dump snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/adhoc/$ts/;
               dirs=$(rclone lsf --dirs-only snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/adhoc/ | sort);
               total=$(printf '%s\n' "$dirs" | grep -c . || true);
-              excess=$(( total - {{ plan.snapshots.adhoc_retention }} ));
+              excess=$(( total - {{ plan_adhoc_retention }} ));
               if [ "$excess" -gt 0 ]; then
               printf '%s\n' "$dirs" | head -n "$excess" | while read -r d; do
               [ -n "$d" ] && rclone purge "snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/adhoc/$d";

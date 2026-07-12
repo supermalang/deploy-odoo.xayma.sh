@@ -61,7 +61,13 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
-          resources: {{ plan.pg_resources | to_json }}
+          resources:
+            requests:
+              cpu: "{{ plan_pg_cpu_request }}"
+              memory: "{{ plan_pg_mem_request }}"
+            limits:
+              cpu: "{{ plan_pg_cpu_limit }}"
+              memory: "{{ plan_pg_mem_limit }}"
           readinessProbe:
             exec:
               command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\""]
@@ -81,4 +87,4 @@ spec:
         storageClassName: {{ odoo.storage_class }}
         resources:
           requests:
-            storage: {{ plan.pg_storage }}
+            storage: {{ plan_pg_storage }}

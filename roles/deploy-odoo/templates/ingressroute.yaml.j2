@@ -15,7 +15,7 @@ spec:
     - websecure
   routes:
 {% if instance_state | default('running') == 'running' %}
-{% if plan.workers | int > 0 %}
+{% if plan_workers | int > 0 %}
     - match: Host(`{{ domain }}`) && PathPrefix(`/longpolling`)
       kind: Rule
       priority: 100

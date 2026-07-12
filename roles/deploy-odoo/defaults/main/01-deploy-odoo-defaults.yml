@@ -7,12 +7,13 @@
 # filestore+addons PVCs, Service, IngressRoute+Certificate, NetworkPolicies).
 #
 # This role is a STATELESS EXECUTOR: the Xayma app is the source of truth for
-# plans and launches the AWX job with a fully-resolved `plan` object in
-# extra_vars (see tasks/_assert-plan.yml for the required keys). No `plans:`
-# dict lives here, and nothing is looked up — every plan.* key is templated
-# straight into the rendered manifests. `xayma_odoo` below is ONLY a survey
-# fallback for manual CLI/AWX-UI runs; it is never consulted when the app
-# supplies customer/instancename/version/domain directly.
+# plans and launches the AWX job with flat `plan_*` extra_vars (see the
+# plan_* block below for the full list). No `plans:` dict lives here, and
+# nothing is looked up — every plan_* var is templated straight into the
+# rendered manifests, with the defaults below as its fallback. `xayma_odoo`
+# below is ONLY a survey fallback for manual CLI/AWX-UI runs; it is never
+# consulted when the app supplies customer/instancename/version/domain
+# directly.
 
 xayma_odoo:
   organization: "xayma"
@@ -37,13 +38,36 @@ kubeconfig_path: /etc/rancher/k3s/k3s.yaml
 cluster_issuer: letsencrypt-production
 platform_domain: xayma.net
 
+# --- Plan vars: sizing/scheduling for the Odoo/Postgres workloads ---
+# Flat (not a nested `plan` dict) so the Xayma app's extra_vars, the AWX
+# survey, and the templates all use the exact same var names with no
+# intermediate object/from_json step. Defaults here are conservative
+# single-worker sizing; the app overrides them per-instance via extra_vars.
+plan_workers: 0
+plan_db_maxconn: 32
+plan_mem_soft: 536870912          # limit_memory_soft (bytes)
+plan_mem_hard: 1073741824         # limit_memory_hard (bytes)
+plan_max_cron_threads: 1
+plan_odoo_cpu_request: "250m"
+plan_odoo_mem_request: "512Mi"
+plan_odoo_cpu_limit: "1"
+plan_odoo_mem_limit: "1Gi"
+plan_pg_cpu_request: "100m"
+plan_pg_mem_request: "256Mi"
+plan_pg_cpu_limit: "500m"
+plan_pg_mem_limit: "512Mi"
+plan_filestore_storage: "2Gi"
+plan_pg_storage: "2Gi"
+plan_daily_enabled: "true"         # AWX has no boolean survey type; "true"/"false", consumed via | bool
+plan_daily_schedule: "0 3 * * *"
+plan_daily_retention: 7
+plan_adhoc_allowed: 5
+plan_adhoc_retention: 3
+
 # --- Role-owned, non-plan defaults ---
-# Sizing/scheduling that comes from the app-supplied `plan` object (workers,
-# resources, PVC sizes, snapshot policy) is NOT declared here — see
-# tasks/_assert-plan.yml for the full contract.
 odoo:
   # Addons PVC is populated out-of-band (ops/CI, not this role) and isn't
-  # part of the plan object, so it gets a fixed starting size here.
+  # part of the plan_* vars, so it gets a fixed starting size here.
   default_addons_storage: 5Gi
   storage_class: local-path
 

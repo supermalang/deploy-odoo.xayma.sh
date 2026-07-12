@@ -1,48 +1,10 @@
 ---
-# Required for odoo_action=deploy/restart/snapshot only (see
-# main.yml). This role is a stateless executor: it ships NO `plans:` dict and
-# does not look anything up — the Xayma app resolves the plan and passes it
-# whole in extra_vars. We only assert the contract is met, then template it.
-- name: Assert a plan was supplied
-  ansible.builtin.assert:
-    that: plan is defined
-    fail_msg: >-
-      extra_vars.plan (or the survey's Plan field) is required for this action.
-      The Xayma app supplies it as a JSON object; a manual survey run supplies it
-      as JSON text. See README for the full plan.* contract.
-
-- name: Normalize plan (survey Textarea gives a JSON string; the app may send an object)
-  ansible.builtin.set_fact:
-    plan: "{{ plan | from_json if plan is string else plan }}"
-
-- name: Assert the app-supplied plan object carries every required key
-  ansible.builtin.assert:
-    that:
-      - plan.workers is defined
-      - plan.db_maxconn is defined
-      - plan.mem_soft is defined
-      - plan.mem_hard is defined
-      - plan.max_cron_threads is defined
-      - plan.odoo_resources is defined
-      - plan.odoo_resources.requests is defined
-      - plan.odoo_resources.limits is defined
-      - plan.pg_resources is defined
-      - plan.pg_resources.requests is defined
-      - plan.pg_resources.limits is defined
-      - plan.filestore_storage is defined
-      - plan.pg_storage is defined
-      - plan.snapshots is defined
-      - plan.snapshots.daily_enabled is defined
-      - plan.snapshots.daily_schedule is defined
-      - plan.snapshots.daily_retention is defined
-      - plan.snapshots.adhoc_allowed is defined
-      - plan.snapshots.adhoc_retention is defined
-    fail_msg: >-
-      extra_vars.plan is missing required keys. This role does not fall back
-      to a local plans dict — the Xayma app (or the manual-run survey) must
-      supply a fully-resolved plan object. See README.md for the full
-      plan.* contract.
-
+# Required for odoo_action=deploy/restart/snapshot only (see main.yml). This
+# role is a stateless executor: it ships NO `plans:` dict and does not look
+# anything up — the Xayma app resolves the plan and passes it as flat
+# plan_* extra_vars (see defaults/main/01-deploy-odoo-defaults.yml for the
+# full list and its defaults). No shape assertion is needed here: every
+# plan_* var already has a role default, and AWX/the app enforce its type.
 - name: Assert this role's own vault secrets are set
   ansible.builtin.assert:
     that:

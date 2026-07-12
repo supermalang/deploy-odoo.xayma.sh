@@ -1,6 +1,6 @@
 #jinja2: lstrip_blocks: True
 ---
-# Filestore (/var/lib/odoo) — sized from the app-supplied plan.
+# Filestore (/var/lib/odoo) — sized from the app-supplied plan_filestore_storage.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -12,10 +12,10 @@ spec:
   storageClassName: {{ odoo.storage_class }}
   resources:
     requests:
-      storage: {{ plan.filestore_storage }}
+      storage: {{ plan_filestore_storage }}
 ---
 # Addons (/opt/extra-addons) — populated out-of-band (ops/CI), not sized by
-# the plan; starts at a fixed default.
+# the plan_* vars; starts at a fixed default.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

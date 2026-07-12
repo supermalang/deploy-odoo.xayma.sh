@@ -5,14 +5,17 @@ This role deploys and manages per-customer Odoo instances as Kubernetes
 workloads on the Xayma.sh Platform's single-node **k3s** cluster (the
 `install-platform.xayma.sh` repo — Traefik v3 + cert-manager + `kubernetes.core`).
 It is intended to run as an AWX job launched by the Xayma app, which passes
-identity vars and a fully-resolved `plan` object as `extra_vars`. It can also
-be run from the CLI for manual/testing use (a survey provides sane fallbacks).
+identity vars and a fully-resolved set of flat `plan_*` vars as `extra_vars`.
+It can also be run from the CLI for manual/testing use (role defaults provide
+sane fallbacks for every `plan_*` var).
 
 ```bash
 ansible-playbook site.yml -i production \
   -e odoo_action=deploy -e customer=supermalang -e instancename=laundromat \
   -e domain=laundromat.supermalang.com -e version=19 \
-  -e '{"plan": { ... }}' \
+  -e plan_workers=2 -e plan_db_maxconn=20 \
+  -e plan_mem_soft=629145600 -e plan_mem_hard=671088640 \
+  -e plan_odoo_mem_limit=1Gi -e plan_pg_mem_limit=512Mi \
   --vault-password-file vault_password -K
 ```
 
@@ -53,8 +56,10 @@ Stateless executor
 -------------------
 This role ships **no `plans:` dict** and does not look anything up — the
 Xayma app is the source of truth for plans and launches the AWX job with a
-fully-resolved `plan` object. `tasks/_assert-plan.yml` only asserts the
-contract below is met, then templates every value straight through.
+fully-resolved set of flat `plan_*` extra_vars (see the table below). Every
+`plan_*` var has a role default (`defaults/main/01-deploy-odoo-defaults.yml`)
+and is templated straight into the rendered manifests — no intermediate
+`plan` object, no JSON parsing.
 
 There are also no per-instance password fields anywhere in the input
 contract: the DB password and Odoo master password are derived
@@ -74,23 +79,32 @@ Identity vars (also survey-able for manual runs):
 | `domain`       | Fully-qualified domain the instance is bound to |
 | `version`      | Odoo major version, e.g. `"19"` → image `odoo:19.0` |
 
-`plan` object (required for `odoo_action=deploy`/`restart`/`snapshot`):
+`plan_*` vars (consumed by `odoo_action=deploy`/`restart`/`snapshot`; every
+one has a role default, so none are strictly required — the Xayma app
+overrides them per-instance):
 
-| Key | Description |
-|-----|-------------|
-| `workers` | Odoo `workers` (0 = threaded; >0 wires the 8072 long-polling port) |
-| `db_maxconn` | `db_maxconn` in odoo.conf |
-| `mem_soft` / `mem_hard` | `limit_memory_soft` / `limit_memory_hard` (bytes) |
-| `max_cron_threads` | `max_cron_threads` in odoo.conf |
-| `odoo_resources.{requests,limits}` | Odoo container resources |
-| `pg_resources.{requests,limits}` | Postgres container resources |
-| `filestore_storage` | Filestore PVC size (e.g. `10Gi`) |
-| `pg_storage` | Postgres PVC size |
-| `snapshots.daily_enabled` | Whether a daily snapshot CronJob is created |
-| `snapshots.daily_schedule` | Cron schedule for the daily snapshot |
-| `snapshots.daily_retention` | Max daily snapshots kept (oldest pruned) |
-| `snapshots.adhoc_allowed` | Quota: max ad-hoc snapshots that may exist at once |
-| `snapshots.adhoc_retention` | Max ad-hoc snapshots kept (oldest pruned) |
+| Var | Default | Description |
+|-----|---------|-------------|
+| `plan_workers` | `0` | Odoo `workers` (0 = threaded; >0 wires the 8072 long-polling port) |
+| `plan_db_maxconn` | `32` | `db_maxconn` in odoo.conf |
+| `plan_mem_soft` | `536870912` | `limit_memory_soft` (bytes) |
+| `plan_mem_hard` | `1073741824` | `limit_memory_hard` (bytes) |
+| `plan_max_cron_threads` | `1` | `max_cron_threads` in odoo.conf |
+| `plan_odoo_cpu_request` | `250m` | Odoo container CPU request |
+| `plan_odoo_mem_request` | `512Mi` | Odoo container memory request |
+| `plan_odoo_cpu_limit` | `1` | Odoo container CPU limit |
+| `plan_odoo_mem_limit` | `1Gi` | Odoo container memory limit |
+| `plan_pg_cpu_request` | `100m` | Postgres container CPU request |
+| `plan_pg_mem_request` | `256Mi` | Postgres container memory request |
+| `plan_pg_cpu_limit` | `500m` | Postgres container CPU limit |
+| `plan_pg_mem_limit` | `512Mi` | Postgres container memory limit |
+| `plan_filestore_storage` | `2Gi` | Filestore PVC size |
+| `plan_pg_storage` | `2Gi` | Postgres PVC size |
+| `plan_daily_enabled` | `"true"` | Whether a daily snapshot CronJob is created (`"true"`/`"false"`, consumed via `\| bool`) |
+| `plan_daily_schedule` | `0 3 * * *` | Cron schedule for the daily snapshot |
+| `plan_daily_retention` | `7` | Max daily snapshots kept (oldest pruned) |
+| `plan_adhoc_allowed` | `5` | Quota: max ad-hoc snapshots that may exist at once |
+| `plan_adhoc_retention` | `3` | Max ad-hoc snapshots kept (oldest pruned) |
 
 `odoo_action=restore` additionally requires `snapshot_id` (the timestamp prefix
 of the snapshot to restore) and accepts optional `snapshot_kind`
@@ -130,11 +144,11 @@ ansible-playbook site.yml -i production \
   -e odoo_action=start -e customer=supermalang -e instancename=laundromat \
   --vault-password-file vault_password -K
 
-# Instance-scope action that consumes the plan object
+# Instance-scope action that consumes the plan_* vars
 ansible-playbook site.yml -i production \
   -e odoo_action=deploy -e customer=supermalang -e instancename=laundromat \
   -e domain=laundromat.supermalang.com -e version=19 \
-  -e '{"plan": { ... }}' \
+  -e plan_workers=2 -e plan_db_maxconn=20 \
   --vault-password-file vault_password -K
 ```
 
@@ -146,9 +160,11 @@ active instances when it needs to act on all of them.
 
 - Job Template → **Variables**: leave empty, set to *Prompt on launch*. This
   lets the Xayma app pass `odoo_action`, the identity vars, and — for
-  `deploy`/`restart`/`snapshot` — the nested `plan` object, all as
+  `deploy`/`restart`/`snapshot` — the flat `plan_*` vars, all as
   `extra_vars` via the AWX API on every launch.
-- Add a **survey** for manual/testing runs from the AWX UI, with fields:
+- Add a **survey** for manual/testing runs from the AWX UI, with fields
+  (defaults match §1/`defaults/main/01-deploy-odoo-defaults.yml`, so every
+  field can be left at its default for a quick manual run):
   - `odoo_action` — Multiple Choice, **required**, Answer Variable Name
     `odoo_action`, one of the 9 values in the table above
   - `instancename` — Text, **required**
@@ -156,39 +172,26 @@ active instances when it needs to act on all of them.
   - `version` — required, default e.g. `"19"`
   - `domain` — optional; when unset the role derives
     `<instancename>.<platform_domain>` (see `defaults/main/01-deploy-odoo-defaults.yml`)
-  - `plan` — **Textarea**, variable `plan`; **required** for
-    `deploy`/`restart`/`snapshot`, **no default** — a missing plan must fail
-    loudly via `_assert-plan.yml`, never silently deploy with the wrong
-    sizing. Paste **JSON** (not YAML) into the field, e.g.:
-    ```json
-    {
-      "workers": 2, "db_maxconn": 20,
-      "mem_soft": 629145600, "mem_hard": 671088640,
-      "max_cron_threads": 1,
-      "odoo_resources": {"requests": {"cpu": "250m", "memory": "512Mi"}, "limits": {"cpu": "1", "memory": "1Gi"}},
-      "pg_resources": {"requests": {"cpu": "250m", "memory": "256Mi"}, "limits": {"cpu": "1", "memory": "512Mi"}},
-      "filestore_storage": "10Gi", "pg_storage": "5Gi",
-      "snapshots": {
-        "daily_enabled": true, "daily_schedule": "0 3 * * *", "daily_retention": 7,
-        "adhoc_allowed": 3, "adhoc_retention": 3
-      }
-    }
-    ```
-    Since AWX surveys only carry scalars, the Textarea answer arrives as a
-    JSON **string**; the Xayma app's API launch instead sends `plan` as a
-    native JSON **object** in `extra_vars`. `_assert-plan.yml` accepts
-    either form and normalizes a string answer to a dict (`from_json`)
-    before asserting/using any `plan.*` key — so a survey run no longer
-    needs `plan` passed separately via "Extra Variables / Prompt on
-    launch"; the survey field is enough.
+  - Integer fields, Answer Variable Name matches the var name: `plan_workers`,
+    `plan_db_maxconn`, `plan_mem_soft`, `plan_mem_hard`, `plan_max_cron_threads`,
+    `plan_daily_retention`, `plan_adhoc_allowed`, `plan_adhoc_retention`
+  - Text fields: `plan_odoo_cpu_request`, `plan_odoo_mem_request`,
+    `plan_odoo_cpu_limit`, `plan_odoo_mem_limit`, `plan_pg_cpu_request`,
+    `plan_pg_mem_request`, `plan_pg_cpu_limit`, `plan_pg_mem_limit`,
+    `plan_filestore_storage`, `plan_pg_storage`, `plan_daily_schedule`
+  - `plan_daily_enabled` — Multiple Choice (`"true"`/`"false"`), consumed via
+    `| bool` since AWX surveys have no boolean type
   - `snapshot_id` / `snapshot_kind` — for `restore`
+
+  The Xayma app sends these same flat `plan_*` keys as `extra_vars` on every
+  API launch — no nested `plan` object or JSON parsing on either side.
 
 Snapshots
 ---------
 A snapshot is a `pg_dump` of the instance database plus a tar of its
 filestore, uploaded to the platform MinIO's `snapshots` bucket, pathed
 `snapshots/{customer}/{instance}/{daily|adhoc}/{timestamp}/`. Daily snapshots
-run on a per-instance CronJob (only created when `plan.snapshots.daily_enabled`);
+run on a per-instance CronJob (only created when `plan_daily_enabled`);
 ad-hoc snapshots are one-shot Jobs triggered by `odoo_action=snapshot`,
 which enforce the `adhoc_allowed` quota before dumping anything. Both prune
 their own prefix down to the configured retention count after a successful

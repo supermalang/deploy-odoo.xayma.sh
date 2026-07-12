@@ -112,4 +112,4 @@
     state: present
     namespace: "{{ customer_slug }}"
     template: snapshot-cronjob.yaml.j2
-  when: plan.snapshots.daily_enabled | bool
+  when: plan_daily_enabled | bool

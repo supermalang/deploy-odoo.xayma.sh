@@ -48,7 +48,7 @@ spec:
           ports:
             - name: http
               containerPort: 8069
-{% if plan.workers | int > 0 %}
+{% if plan_workers | int > 0 %}
             - name: longpolling
               containerPort: 8072
 {% endif %}
@@ -59,7 +59,13 @@ spec:
               mountPath: /var/lib/odoo
             - name: addons
               mountPath: /opt/extra-addons
-          resources: {{ plan.odoo_resources | to_json }}
+          resources:
+            requests:
+              cpu: "{{ plan_odoo_cpu_request }}"
+              memory: "{{ plan_odoo_mem_request }}"
+            limits:
+              cpu: "{{ plan_odoo_cpu_limit }}"
+              memory: "{{ plan_odoo_mem_limit }}"
           readinessProbe:
             httpGet:
               path: /web/login

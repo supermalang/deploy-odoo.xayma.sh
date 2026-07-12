@@ -48,5 +48,4 @@
     namespace: "{{ customer_slug }}"
     template: ingressroute.yaml.j2
   vars:
-    plan:
-      workers: "{{ 1 if (_edit_has_longpolling | bool) else 0 }}"
+    plan_workers: "{{ 1 if (_edit_has_longpolling | bool) else 0 }}"

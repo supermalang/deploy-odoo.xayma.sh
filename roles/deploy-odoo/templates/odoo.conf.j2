@@ -19,7 +19,7 @@ list_db = False
 admin_passwd = ${ADMIN_PASSWD}
 
 # Max physical connections to Postgres per worker process.
-db_maxconn = {{ plan.db_maxconn }}
+db_maxconn = {{ plan_db_maxconn }}
 
 #-----------------------------------------------------------------------------
 # Logging — stdout only (no file logs), so SigNoz's log collection picks
@@ -49,15 +49,15 @@ language = fr_FR
 server_wide_modules = web
 
 #-----------------------------------------------------------------------------
-# Workers / resource tuning — entirely plan-supplied (the Xayma app resolves
-# these from the customer's plan; this role only templates them).
+# Workers / resource tuning — entirely plan_*-supplied (the Xayma app
+# resolves these from the customer's plan; this role only templates them).
 # workers = 0 disables prefork (threaded) mode; workers > 0 enables
 # multiprocessing and wires the long-polling port above.
 #-----------------------------------------------------------------------------
-workers = {{ plan.workers }}
-max_cron_threads = {{ plan.max_cron_threads }}
-limit_memory_soft = {{ plan.mem_soft }}
-limit_memory_hard = {{ plan.mem_hard }}
+workers = {{ plan_workers }}
+max_cron_threads = {{ plan_max_cron_threads }}
+limit_memory_soft = {{ plan_mem_soft }}
+limit_memory_hard = {{ plan_mem_hard }}
 limit_time_cpu = 120
 limit_time_real = 300
 limit_request = 8196

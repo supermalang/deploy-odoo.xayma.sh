@@ -42,7 +42,7 @@ spec:
               kubernetes.io/metadata.name: kube-system
       ports:
         - port: 8069
-{% if plan.workers | int > 0 %}
+{% if plan_workers | int > 0 %}
         - port: 8072
 {% endif %}
 ---

@@ -1,10 +1,10 @@
 #jinja2: lstrip_blocks: True
 ---
 # Daily snapshot (pg_dump + filestore tar) -> platform MinIO, count-based
-# pruning to plan.snapshots.daily_retention. Two-stage shape mirrors
+# pruning to plan_daily_retention. Two-stage shape mirrors
 # install-platform.xayma.sh's deploy-databases/templates/postgres-backup-cronjob.yaml.j2
 # (dump/archive initContainers -> shared emptyDir -> rclone-upload container),
-# only applied when plan.snapshots.daily_enabled.
+# only applied when plan_daily_enabled.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -12,7 +12,7 @@ metadata:
   namespace: {{ customer_slug }}
   labels: {{ odoo_labels_snapshot | to_json }}
 spec:
-  schedule: {{ plan.snapshots.daily_schedule | to_json }}
+  schedule: {{ plan_daily_schedule | to_json }}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -61,7 +61,7 @@ spec:
                   rclone copy /dump snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/daily/$ts/;
                   dirs=$(rclone lsf --dirs-only snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/daily/ | sort);
                   total=$(printf '%s\n' "$dirs" | grep -c . || true);
-                  excess=$(( total - {{ plan.snapshots.daily_retention }} ));
+                  excess=$(( total - {{ plan_daily_retention }} ));
                   if [ "$excess" -gt 0 ]; then
                   printf '%s\n' "$dirs" | head -n "$excess" | while read -r d; do
                   [ -n "$d" ] && rclone purge "snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/daily/$d";

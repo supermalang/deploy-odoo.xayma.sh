@@ -7,8 +7,8 @@
 # own not-yet-overridden name for a `default()`, is circular: vars/main.yml
 # is a single precedence layer, so `customer: "{{ customer | default(...) }}"`
 # resolves `customer` against itself, not against a lower layer).
-# `plan` is the app-supplied, fully-resolved sizing/feature object (see
-# defaults/main/01-deploy-odoo-defaults.yml + tasks/_assert-plan.yml).
+# The flat `plan_*` vars are the app-supplied, fully-resolved sizing/feature
+# vars (see defaults/main/01-deploy-odoo-defaults.yml + tasks/_assert-plan.yml).
 
 # --- Kubernetes naming (RFC-1123: lowercase, alnum + '-', <=63 chars) ---
 # k8s object names cannot contain underscores (the old role's `organization`/
