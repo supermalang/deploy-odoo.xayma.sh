@@ -98,13 +98,15 @@ spec:
       ports:
         - port: 5432
 ---
-# Tight, same-instance-only: this instance's snapshot/restore Jobs -> this
-# instance's Postgres (name=snapshot label, set on snapshot-cronjob.yaml.j2 /
-# snapshot-job.yaml.j2 / restore-job.yaml.j2 pods).
+# Tight, same-instance-only: this instance's restore Job -> this instance's
+# Postgres (name=restore label, set on restore-job.yaml.j2 pods). Backups
+# themselves are orchestrated externally by n8n, outside this role/cluster —
+# only the restore path (odoo_action=restore) runs a pod inside this
+# namespace that needs Postgres access.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ instance_slug }}-allow-snapshot-to-postgres
+  name: {{ instance_slug }}-allow-restore-to-postgres
   namespace: {{ customer_slug }}
   labels:
     app.kubernetes.io/part-of: xayma-platform
@@ -120,7 +122,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: snapshot
+              app.kubernetes.io/name: restore
               xayma.sh/instance: {{ instance_slug }}
       ports:
         - port: 5432

@@ -1,5 +1,5 @@
 ---
-# Required for odoo_action=deploy/restart/snapshot only (see main.yml). This
+# Required for odoo_action=deploy/restart only (see main.yml). This
 # role is a stateless executor: it ships NO `plans:` dict and does not look
 # anything up — the Xayma app resolves the plan and passes it as flat
 # plan_* extra_vars (see defaults/main/01-deploy-odoo-defaults.yml for the

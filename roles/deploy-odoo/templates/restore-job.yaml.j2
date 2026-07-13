@@ -1,20 +1,21 @@
 #jinja2: lstrip_blocks: True
 ---
-# Restore a snapshot identified by `snapshot_id` (the timestamp prefix
-# produced by snapshot-cronjob.yaml.j2/snapshot-job.yaml.j2) of kind
-# `snapshot_kind` (daily|adhoc). tasks/restore-instance.yml scales Odoo to 0
-# before applying this and back to 1 after it completes.
+# Restore a snapshot identified by `snapshot_id` (the timestamp prefix of a
+# snapshot uploaded by n8n's externally-orchestrated backup, pathed
+# snapshots/{customer}/{instance}/{snapshot_kind}/{snapshot_id}/ in the
+# platform MinIO) of kind `snapshot_kind` (daily|adhoc). tasks/restore-instance.yml
+# scales Odoo to 0 before applying this and back to 1 after it completes.
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: {{ instance_slug }}-restore-{{ ansible_date_time.iso8601_basic_short | lower }}
   namespace: {{ customer_slug }}
-  labels: {{ odoo_labels_snapshot | to_json }}
+  labels: {{ odoo_labels_restore | to_json }}
 spec:
   backoffLimit: 0
   template:
     metadata:
-      labels: {{ odoo_labels_snapshot | to_json }}
+      labels: {{ odoo_labels_restore | to_json }}
     spec:
       restartPolicy: Never
       initContainers:

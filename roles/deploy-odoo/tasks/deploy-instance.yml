@@ -113,11 +113,3 @@
     state: present
     namespace: "{{ customer_slug }}"
     template: networkpolicies.yaml.j2
-
-- name: Apply the daily snapshot CronJob
-  kubernetes.core.k8s:
-    kubeconfig: "{{ kubeconfig_path }}"
-    state: present
-    namespace: "{{ customer_slug }}"
-    template: snapshot-cronjob.yaml.j2
-  when: plan_daily_enabled | bool

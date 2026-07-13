@@ -34,7 +34,7 @@ Architecture
   fast with a clear error rather than a mid-deploy Kubernetes API rejection.
 - Every resource carries `app.kubernetes.io/part-of: xayma-platform`,
   `app.kubernetes.io/managed-by: ansible`, `app.kubernetes.io/name`
-  (`odoo`/`postgres`/`snapshot`/`suspend-backend`), and
+  (`odoo`/`postgres`/`restore`/`suspend-backend`), and
   `xayma.sh/{customer,instance,odoo-version}` — teardown and NetworkPolicy
   selectors are entirely label-driven.
 - A single **suspend-backend** (busybox httpd) is shared by every instance in
@@ -47,10 +47,10 @@ Architecture
   `deploy-network-policies` (which only iterates its own fixed platform
   namespace list and never sees a customer namespace): default-deny ingress,
   edge → Odoo, `network-zone=observability` (pgAdmin) → Postgres, and
-  same-instance-only Odoo/snapshot → Postgres. The namespace itself still
+  same-instance-only Odoo/restore → Postgres. The namespace itself still
   carries `xayma.sh/network-zone: webservers` so the platform's existing
   `databases ← webservers` rule (a live label selector) lets this
-  namespace's snapshot Jobs reach the platform MinIO.
+  namespace's restore Job reach the platform MinIO.
 
 Stateless executor
 -------------------
@@ -79,7 +79,7 @@ Identity vars (also survey-able for manual runs):
 | `custom_domain` | Optional extra domain, in addition to the always-attached default host `<instance_slug>.<platform_domain>` (blank = default host only; deduped if it equals the default) |
 | `version`      | Odoo major version, e.g. `"19"` → image `odoo:19.0` |
 
-`plan_*` vars (consumed by `odoo_action=deploy`/`restart`/`snapshot`; every
+`plan_*` vars (consumed by `odoo_action=deploy`/`restart`; every
 one has a role default, so none are strictly required — the Xayma app
 overrides them per-instance):
 
@@ -98,13 +98,8 @@ overrides them per-instance):
 | `plan_pg_mem_request` | `256Mi` | Postgres container memory request |
 | `plan_pg_cpu_limit` | `500m` | Postgres container CPU limit |
 | `plan_pg_mem_limit` | `512Mi` | Postgres container memory limit |
-| `plan_filestore_storage` | `2Gi` | Filestore PVC size |
-| `plan_pg_storage` | `2Gi` | Postgres PVC size |
-| `plan_daily_enabled` | `"true"` | Whether a daily snapshot CronJob is created (`"true"`/`"false"`, consumed via `\| bool`) |
-| `plan_daily_schedule` | `0 3 * * *` | Cron schedule for the daily snapshot |
-| `plan_daily_retention` | `7` | Max daily snapshots kept (oldest pruned) |
-| `plan_adhoc_allowed` | `5` | Quota: max ad-hoc snapshots that may exist at once |
-| `plan_adhoc_retention` | `3` | Max ad-hoc snapshots kept (oldest pruned) |
+| `plan_filestore_storage` | `1Gi` | Filestore PVC size |
+| `plan_pg_storage` | `1Gi` | Postgres PVC size |
 | `plan_init_modules` | `"base"` | Comma-separated (no spaces) module list for the first-deploy `-i` init, e.g. `"base,my_module"`; custom modules must exist in the addons path |
 
 `odoo_action=restore` additionally requires `snapshot_id` (the timestamp prefix
@@ -127,14 +122,13 @@ multi-instance action and never will.
 
 | `odoo_action` | Description |
 |-----|-------------|
-| `deploy` | Create/update an instance (namespace, Postgres, Odoo, ingress, network policies, snapshot CronJob) |
+| `deploy` | Create/update an instance (namespace, Postgres, Odoo, ingress, network policies) |
 | `start` | Scale up, repoint the IngressRoute at Odoo |
 | `stop` | Scale down, repoint the IngressRoute at the stopped page |
 | `suspend` | Scale down, repoint the IngressRoute at the suspended page |
 | `restart` | Reapply config/Deployment/StatefulSet, then force pod recreation |
 | `edit-domain` | Change the custom domain (the default host is untouched), preserving the current running/suspended/stopped state |
 | `delete` | Delete every resource labelled for this instance; if it was the last instance in the customer namespace, also delete the namespace (and with it the shared suspend-backend/MinIO Secret) |
-| `snapshot` | Trigger an ad-hoc snapshot (subject to `adhoc_allowed`/`adhoc_retention`) |
 | `restore` | Restore a snapshot (`snapshot_id`, optional `snapshot_kind`) |
 
 CLI examples:
@@ -161,13 +155,13 @@ active instances when it needs to act on all of them.
 
 - Job Template → **Variables**: leave empty, set to *Prompt on launch*. This
   lets the Xayma app pass `odoo_action`, the identity vars, and — for
-  `deploy`/`restart`/`snapshot` — the flat `plan_*` vars, all as
+  `deploy`/`restart` — the flat `plan_*` vars, all as
   `extra_vars` via the AWX API on every launch.
 - Add a **survey** for manual/testing runs from the AWX UI, with fields
   (defaults match §1/`defaults/main/01-deploy-odoo-defaults.yml`, so every
   field can be left at its default for a quick manual run):
   - `odoo_action` — Multiple Choice, **required**, Answer Variable Name
-    `odoo_action`, one of the 9 values in the table above
+    `odoo_action`, one of the 8 values in the table above
   - `instancename` — Text, **required**
   - `customer` — Text, **required**
   - `version` — required, default e.g. `"19"`
@@ -177,47 +171,49 @@ active instances when it needs to act on all of them.
     equals the default). NOTE for the app: it now sends `custom_domain`
     (optional) instead of the old `domain` var.
   - Integer fields, Answer Variable Name matches the var name: `plan_workers`,
-    `plan_db_maxconn`, `plan_mem_soft`, `plan_mem_hard`, `plan_max_cron_threads`,
-    `plan_daily_retention`, `plan_adhoc_allowed`, `plan_adhoc_retention`
+    `plan_db_maxconn`, `plan_mem_soft`, `plan_mem_hard`, `plan_max_cron_threads`
   - Text fields: `plan_odoo_cpu_request`, `plan_odoo_mem_request`,
     `plan_odoo_cpu_limit`, `plan_odoo_mem_limit`, `plan_pg_cpu_request`,
     `plan_pg_mem_request`, `plan_pg_cpu_limit`, `plan_pg_mem_limit`,
-    `plan_filestore_storage`, `plan_pg_storage`, `plan_daily_schedule`,
+    `plan_filestore_storage`, `plan_pg_storage`,
     `plan_init_modules` (default `"base"`; comma-separated, no spaces —
     custom modules must exist in the addons path)
-  - `plan_daily_enabled` — Multiple Choice (`"true"`/`"false"`), consumed via
-    `| bool` since AWX surveys have no boolean type
   - `snapshot_id` / `snapshot_kind` — for `restore`
 
   The Xayma app sends these same flat `plan_*` keys as `extra_vars` on every
   API launch — no nested `plan` object or JSON parsing on either side.
 
-Snapshots
----------
-A snapshot is a `pg_dump` of the instance database plus a tar of its
-filestore, uploaded to the platform MinIO's `snapshots` bucket, pathed
-`snapshots/{customer}/{instance}/{daily|adhoc}/{timestamp}/`. Daily snapshots
-run on a per-instance CronJob (only created when `plan_daily_enabled`);
-ad-hoc snapshots are one-shot Jobs triggered by `odoo_action=snapshot`,
-which enforce the `adhoc_allowed` quota before dumping anything. Both prune
-their own prefix down to the configured retention count after a successful
-upload.
+Backups & Restore
+-----------------
+This role owns no backup policy or schedule. Backups are orchestrated
+externally by **n8n**, driven by the app's live plan/payment status, and
+land in the platform MinIO's `snapshots` bucket, pathed
+`snapshots/{customer}/{instance}/{daily|adhoc}/{timestamp}/` (same layout
+whether n8n calls a snapshot "daily" or "adhoc").
+
+`odoo_action=restore` is the one snapshot-related action this role still
+provides — a deliberate ops action, not dynamic policy. Given `snapshot_id`
+(the timestamp prefix of a snapshot already sitting in that MinIO path) and
+optional `snapshot_kind` (`daily`|`adhoc`, default `daily`), it scales Odoo
+to 0, runs a Job that pulls the dump + filestore tar via `rclone`, drops and
+recreates the instance database from the dump, replaces the filestore, then
+scales Odoo back up.
 
 Versions
 --------
 Pinned in `defaults/main/01-deploy-odoo-defaults.yml` (`versions:` dict) —
 Odoo `"19"` (`odoo:19.0`, survey fallback only; real deploys pass `version`
 explicitly), Postgres `16.6-bookworm` (dedicated per instance), `busybox`
-(suspend-backend + config-merge initContainer), `rclone` (snapshot/restore
-Jobs). Never `latest`.
+(suspend-backend + config-merge initContainer), `rclone` (restore Job).
+Never `latest`.
 
 Vault
 -----
 `defaults/main/02-credentials.yml` (encrypted) holds:
 `vault_odoo_db_password`, `vault_odoo_admin_password` (per-instance secret
 derivation seeds — see `vars/main.yml`), `vault_odoo_minio_access_key`,
-`vault_odoo_minio_secret_key` (platform MinIO, snapshots bucket). See
-`defaults/main/02-credentials.yml.example` to (re)create it.
+`vault_odoo_minio_secret_key` (platform MinIO access for `odoo_action=restore`).
+See `defaults/main/02-credentials.yml.example` to (re)create it.
 
 Known caveats
 -------------
@@ -226,10 +222,6 @@ Known caveats
   part of the initial-deploy manifests) — use `odoo_action=deploy` for
   create/resize while an instance is running; use the dedicated
   `start`/`stop`/`suspend` actions for state changes.
-- `odoo_action=snapshot`'s quota (`adhoc_allowed`) is a hard ceiling on how many
-  ad-hoc snapshots may exist at once, checked before dumping anything;
-  `adhoc_retention` is the separate keep-newest-N pruned after a successful
-  upload. Set `adhoc_retention <= adhoc_allowed`.
 - A fresh `odoo_action=deploy` now auto-initializes the database on first
   boot: the Odoo container's entrypoint waits for Postgres, checks whether
   `{{ instance_slug }}`'s database already exists, and if not runs

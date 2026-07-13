@@ -58,7 +58,7 @@ odoo_labels:
 
 odoo_labels_odoo: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'odoo'}) }}"
 odoo_labels_postgres: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'postgres'}) }}"
-odoo_labels_snapshot: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'snapshot'}) }}"
+odoo_labels_restore: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'restore'}) }}"
 odoo_labels_suspend: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'suspend-backend'}) }}"
 
 # --- Stateless per-instance secret derivation ---

@@ -58,11 +58,6 @@ plan_pg_cpu_limit: "500m"
 plan_pg_mem_limit: "512Mi"
 plan_filestore_storage: "1Gi"
 plan_pg_storage: "1Gi"
-plan_daily_enabled: "true"         # AWX has no boolean survey type; "true"/"false", consumed via | bool
-plan_daily_schedule: "0 3 * * *"
-plan_daily_retention: 7
-plan_adhoc_allowed: 5
-plan_adhoc_retention: 3
 plan_init_modules: "base"          # comma-separated, NO spaces, e.g. "base,my_module" — first-deploy `-i` list
 
 # --- Role-owned, non-plan defaults ---
@@ -72,7 +67,7 @@ odoo:
   default_addons_storage: 5Gi
   storage_class: local-path
 
-  # Platform MinIO (internal, backup/snapshot target) — same values as
+  # Platform MinIO (internal, restore source) — same values as
   # install-platform.xayma.sh's deploy-databases/deploy-platform-storage,
   # re-declared here since roles in that platform are self-contained
   # copy-paste consumers of well-known values rather than cross-role
@@ -88,4 +83,4 @@ versions:
   odoo: "19"                 # survey fallback only; real deploys pass `version` explicitly
   postgres: "16.6-bookworm"   # per-instance dedicated Postgres (no AWX-style PG15 pin needed here)
   busybox: "1.38.0"           # suspend/stop backend + config-merge initContainer
-  rclone: "1.74.3"            # snapshot/restore Jobs -> platform MinIO
+  rclone: "1.74.3"            # restore Job -> platform MinIO

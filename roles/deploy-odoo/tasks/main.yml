@@ -11,7 +11,13 @@
 # over the customer's active instances.
 #
 # Instance scope: deploy, start, stop, suspend, restart, edit-domain, delete,
-#                 snapshot, restore
+#                 restore
+#
+# Backups are orchestrated externally by n8n (driven by the app's live
+# plan/payment status), not baked into the instance at deploy time — this
+# role owns no snapshot policy or schedule. `restore` stays here: it's a
+# deliberate ops action against a snapshot already sitting in the platform
+# MinIO, not dynamic backup policy.
 
 - import_tasks: _assert-identity.yml
 
@@ -19,11 +25,11 @@
   ansible.builtin.assert:
     that: odoo_action is defined and odoo_action in [
             'deploy','start','stop','suspend','restart','edit-domain','delete',
-            'snapshot','restore']
-    fail_msg: "Set -e odoo_action=<one of: deploy|start|stop|suspend|restart|edit-domain|delete|snapshot|restore>"
+            'restore']
+    fail_msg: "Set -e odoo_action=<one of: deploy|start|stop|suspend|restart|edit-domain|delete|restore>"
 
 - import_tasks: _assert-plan.yml
-  when: odoo_action in ['deploy', 'restart', 'snapshot']
+  when: odoo_action in ['deploy', 'restart']
 
 - import_tasks: deploy-instance.yml
   when: odoo_action == 'deploy'
@@ -45,9 +51,6 @@
 
 - import_tasks: delete-instance.yml
   when: odoo_action == 'delete'
-
-- import_tasks: snapshot-instance.yml
-  when: odoo_action == 'snapshot'
 
 - import_tasks: restore-instance.yml
   when: odoo_action == 'restore'
