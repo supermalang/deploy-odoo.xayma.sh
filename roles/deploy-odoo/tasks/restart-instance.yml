@@ -6,8 +6,15 @@
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
-    namespace: "{{ customer_slug }}"
-    template: odoo-configmap.yaml.j2
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ instance_name }}"
+        namespace: "{{ customer_slug }}"
+        labels: "{{ odoo_labels_odoo }}"
+      data:
+        odoo.conf: "{{ lookup('template', role_path + '/templates/odoo.conf.j2') }}"
 
 - name: Reapply the Odoo Deployment
   kubernetes.core.k8s:

@@ -17,8 +17,15 @@
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
-    namespace: "{{ customer_slug }}"
-    template: odoo-configmap.yaml.j2
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ instance_name }}"
+        namespace: "{{ customer_slug }}"
+        labels: "{{ odoo_labels_odoo }}"
+      data:
+        odoo.conf: "{{ lookup('template', role_path + '/templates/odoo.conf.j2') }}"
 
 - name: Apply the filestore + addons PVCs
   kubernetes.core.k8s:
@@ -49,9 +56,10 @@
     template: odoo-service.yaml.j2
 
 # Shared per-customer suspend/stop/error backend. The ConfigMap's data comes
-# from files/*.html via the `file` lookup (Jinja `{% include %}` can't reach
-# the role's files/ dir), so it's applied inline here with `definition:`,
-# same technique as install-platform.xayma.sh's deploy-error-pages role.
+# from files/*.html via the `file` lookup (Jinja's template-include directive
+# can't reach the role's files/ dir), so it's applied inline here with
+# `definition:`, same technique as install-platform.xayma.sh's
+# deploy-error-pages role.
 - name: Apply the suspend-backend HTML ConfigMap
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
