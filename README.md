@@ -235,10 +235,11 @@ Known caveats
   secret before serving. This guard only fires when the database is absent,
   so re-deploys/restarts never re-init an existing DB. `list_db = False` +
   `dbfilter` in `odoo.conf.j2` still keep the `/web/database/manager`
-  selector disabled — login is `admin` / `<ADMIN_PASSWD>` (from the instance
-  Secret), not a manually-chosen password. Restoring an existing snapshot
-  (`odoo_action=restore`) is unaffected — the DB already exists by the time
-  the guard checks.
+  selector disabled — login is `admin` / `<ADMIN_PASSWD>`, the per-instance
+  derived secret value, read with:
+  `kubectl get secret <instance_name> -n <customer> -o jsonpath='{.data.ADMIN_PASSWD}' | base64 -d`.
+  Restoring an existing snapshot (`odoo_action=restore`) is unaffected — the
+  DB already exists by the time the guard checks.
 
 Requirements
 ------------
