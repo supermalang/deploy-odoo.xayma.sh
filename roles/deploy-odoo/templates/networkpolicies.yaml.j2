@@ -151,3 +151,29 @@ spec:
               kubernetes.io/metadata.name: kube-system
       ports:
         - port: 80
+---
+# Edge (Traefik/kube-system) -> this customer's cm-acme-http-solver pod(s),
+# spun up transiently by cert-manager to answer ACME HTTP-01 challenges.
+# Namespace-wide (one solver policy per customer, not per instance) — fixed
+# name so re-applying it on every odoo_action=deploy is idempotent. Without
+# this, the default-deny-ingress policy blocks the challenge and certs never
+# issue.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-edge-to-acme-solver
+  namespace: {{ customer_slug }}
+  labels:
+    app.kubernetes.io/part-of: xayma-platform
+    app.kubernetes.io/managed-by: ansible
+spec:
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
