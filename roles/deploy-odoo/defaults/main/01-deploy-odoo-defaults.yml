@@ -79,7 +79,7 @@ odoo:
   # variable references.
   storage_namespace: xayma-storage
   snapshot_bucket: snapshots
-  snapshot_endpoint: "http://minio.{{ odoo.storage_namespace }}.svc:9000"
+  snapshot_endpoint: "http://minio.xayma-storage.svc:9000"
   snapshot_access_key: "{{ vault_odoo_minio_access_key }}"
   snapshot_secret_key: "{{ vault_odoo_minio_secret_key }}"
 

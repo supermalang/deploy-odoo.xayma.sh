@@ -11,7 +11,7 @@
     state: present
     namespace: "{{ customer_slug }}"
     template: secrets.yaml.j2
-  no_log: false
+  no_log: true
 
 - name: Apply the odoo.conf ConfigMap
   kubernetes.core.k8s:
