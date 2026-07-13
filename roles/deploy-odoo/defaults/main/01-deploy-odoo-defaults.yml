@@ -12,7 +12,7 @@
 # nothing is looked up — every plan_* var is templated straight into the
 # rendered manifests, with the defaults below as its fallback. `xayma_odoo`
 # below is ONLY a survey fallback for manual CLI/AWX-UI runs; it is never
-# consulted when the app supplies customer/instancename/version/domain
+# consulted when the app supplies customer/instancename/version/custom_domain
 # directly.
 
 xayma_odoo:
@@ -26,7 +26,7 @@ xayma_odoo:
 customer: "{{ xayma_odoo.organization }}"
 instancename: "{{ xayma_odoo.instancename }}"
 version: "{{ xayma_odoo.version }}"
-domain: "{{ instance_slug }}.{{ platform_domain }}"
+custom_domain: ""    # optional additional domain; blank = default host only
 
 # --- Platform-wide seam vars ---
 # Same contract as install-platform.xayma.sh's group_vars/all/main.yml, kept

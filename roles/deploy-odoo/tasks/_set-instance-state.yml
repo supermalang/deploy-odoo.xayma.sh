@@ -5,10 +5,11 @@
 #     (_state_state: running | suspended | stopped)
 #
 # Scales Odoo+PG via k8s_scale, then re-points the instance's IngressRoute.
-# The Host(...) match and whether a longpolling route exists are recovered
-# from the LIVE IngressRoute rather than needing the original `domain`/`plan_workers`
+# The host list is recovered from the Certificate's dnsNames (source of
+# truth) and whether a longpolling route exists is recovered from the LIVE
+# IngressRoute, rather than needing the original `custom_domain`/`plan_workers`
 # passed back in — start/stop/suspend only receive `odoo_action`+identity vars,
-# not the instance's domain or plan.
+# not the instance's domains or plan.
 - name: "[{{ _state_instance_slug }}] Scale the Odoo Deployment"
   kubernetes.core.k8s_scale:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -41,13 +42,23 @@
     that: _state_ingressroute.resources | length > 0
     fail_msg: "No IngressRoute {{ _state_instance_name }} in {{ customer_slug }} - has this instance been deployed?"
 
-- name: "[{{ _state_instance_slug }}] Recover the Host + longpolling flag"
+- name: "[{{ _state_instance_slug }}] Fetch the current Certificate"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Certificate
+    api_version: cert-manager.io/v1
+    namespace: "{{ customer_slug }}"
+    name: "{{ _state_instance_name }}-tls"
+  register: _state_cert
+
+- name: "[{{ _state_instance_slug }}] Assert the Certificate exists"
+  ansible.builtin.assert:
+    that: _state_cert.resources | length > 0
+    fail_msg: "No Certificate {{ _state_instance_name }}-tls in {{ customer_slug }} - has this instance been deployed?"
+
+- name: "[{{ _state_instance_slug }}] Recover the domains + longpolling flag"
   ansible.builtin.set_fact:
-    _state_domain: >-
-      {{ _state_ingressroute.resources[0].spec.routes
-         | map(attribute='match') | select('search', 'Host\(')
-         | map('regex_search', 'Host\(`([^`]+)`\)', '\1') | map('first')
-         | first }}
+    _state_domains: "{{ _state_cert.resources[0].spec.dnsNames }}"
     _state_has_longpolling: >-
       {{ (_state_ingressroute.resources[0].spec.routes
           | selectattr('match', 'search', 'longpolling') | list | length) > 0 }}
@@ -62,6 +73,6 @@
     instance_name: "{{ _state_instance_name }}"
     instance_slug: "{{ _state_instance_slug }}"
     instance_state: "{{ _state_state }}"
-    domain: "{{ _state_domain }}"
+    instance_domains: "{{ _state_domains }}"
     plan_workers: "{{ 1 if (_state_has_longpolling | bool) else 0 }}"
     odoo_labels_odoo: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'odoo', 'xayma.sh/instance': _state_instance_slug}) }}"

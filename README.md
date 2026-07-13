@@ -12,7 +12,7 @@ sane fallbacks for every `plan_*` var).
 ```bash
 ansible-playbook site.yml -i production \
   -e odoo_action=deploy -e customer=supermalang -e instancename=laundromat \
-  -e domain=laundromat.supermalang.com -e version=19 \
+  -e custom_domain=laundromat.supermalang.com -e version=19 \
   -e plan_workers=2 -e plan_db_maxconn=20 \
   -e plan_mem_soft=629145600 -e plan_mem_hard=671088640 \
   -e plan_odoo_mem_limit=1Gi -e plan_pg_mem_limit=512Mi \
@@ -76,7 +76,7 @@ Identity vars (also survey-able for manual runs):
 |----------------|-------------|
 | `customer`     | Customer slug/name (slugified to the namespace name) |
 | `instancename` | Instance name (slugified into the k8s object name) |
-| `domain`       | Fully-qualified domain the instance is bound to |
+| `custom_domain` | Optional extra domain, in addition to the always-attached default host `<instance_slug>.<platform_domain>` (blank = default host only; deduped if it equals the default) |
 | `version`      | Odoo major version, e.g. `"19"` → image `odoo:19.0` |
 
 `plan_*` vars (consumed by `odoo_action=deploy`/`restart`/`snapshot`; every
@@ -132,7 +132,7 @@ multi-instance action and never will.
 | `stop` | Scale down, repoint the IngressRoute at the stopped page |
 | `suspend` | Scale down, repoint the IngressRoute at the suspended page |
 | `restart` | Reapply config/Deployment/StatefulSet, then force pod recreation |
-| `edit-domain` | Change the domain, preserving the current running/suspended/stopped state |
+| `edit-domain` | Change the custom domain (the default host is untouched), preserving the current running/suspended/stopped state |
 | `delete` | Delete every resource labelled for this instance; if it was the last instance in the customer namespace, also delete the namespace (and with it the shared suspend-backend/MinIO Secret) |
 | `snapshot` | Trigger an ad-hoc snapshot (subject to `adhoc_allowed`/`adhoc_retention`) |
 | `restore` | Restore a snapshot (`snapshot_id`, optional `snapshot_kind`) |
@@ -148,7 +148,7 @@ ansible-playbook site.yml -i production \
 # Instance-scope action that consumes the plan_* vars
 ansible-playbook site.yml -i production \
   -e odoo_action=deploy -e customer=supermalang -e instancename=laundromat \
-  -e domain=laundromat.supermalang.com -e version=19 \
+  -e custom_domain=laundromat.supermalang.com -e version=19 \
   -e plan_workers=2 -e plan_db_maxconn=20 \
   --vault-password-file vault_password -K
 ```
@@ -171,8 +171,11 @@ active instances when it needs to act on all of them.
   - `instancename` — Text, **required**
   - `customer` — Text, **required**
   - `version` — required, default e.g. `"19"`
-  - `domain` — optional; when unset the role derives
-    `<instancename>.<platform_domain>` (see `defaults/main/01-deploy-odoo-defaults.yml`)
+  - `custom_domain` — Text, optional, no default. Every instance always gets
+    the default host `<instancename>.<platform_domain>`; `custom_domain` adds
+    one more host to both the Certificate and the IngressRoute (deduped if it
+    equals the default). NOTE for the app: it now sends `custom_domain`
+    (optional) instead of the old `domain` var.
   - Integer fields, Answer Variable Name matches the var name: `plan_workers`,
     `plan_db_maxconn`, `plan_mem_soft`, `plan_mem_hard`, `plan_max_cron_threads`,
     `plan_daily_retention`, `plan_adhoc_allowed`, `plan_adhoc_retention`

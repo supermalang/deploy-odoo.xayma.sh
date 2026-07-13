@@ -8,8 +8,7 @@ metadata:
   labels: {{ odoo_labels_odoo | to_json }}
 spec:
   secretName: {{ instance_name }}-tls
-  dnsNames:
-    - "{{ domain }}"
+  dnsNames: {{ instance_domains | to_json }}
   issuerRef:
     name: "{{ cluster_issuer }}"
     kind: ClusterIssuer

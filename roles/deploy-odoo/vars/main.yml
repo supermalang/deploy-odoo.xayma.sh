@@ -1,5 +1,5 @@
 ---
-# `customer`/`instancename`/`domain`/`version` are the public interface
+# `customer`/`instancename`/`custom_domain`/`version` are the public interface
 # (extra_vars from the Xayma app, or the survey for manual runs); their
 # survey-fallback defaults live in defaults/main/01-deploy-odoo-defaults.yml
 # (role defaults are the lowest-precedence layer, so extra_vars cleanly
@@ -32,6 +32,18 @@ pg_name: "{{ instance_name }}-pg"
 # instance) — every instance's IngressRoute in this namespace points at the
 # same busybox+ConfigMap when suspended/stopped or on a 404/50x.
 suspend_backend_name: "{{ customer_slug }}-suspend"
+
+# --- Domains: default host always attached, optional custom host deduped ---
+# instancename is globally unique (guaranteed by the Xayma app), so the
+# default host needs no customer prefix. custom_domain is an optional extra
+# host from the app/survey; when blank or equal to the default it's dropped
+# rather than attached twice. Both the Certificate (dnsNames) and the
+# IngressRoute (Host(...) match) template off instance_domains.
+default_domain: "{{ instance_slug }}.{{ platform_domain }}"
+instance_domains: >-
+  {{ [default_domain] + ([custom_domain] if (custom_domain is defined
+     and (custom_domain | length) > 0 and custom_domain != default_domain)
+     else []) }}
 
 # --- Standard label block, applied to every resource this role creates ---
 # The three app.kubernetes.io/* keys match the platform-wide convention

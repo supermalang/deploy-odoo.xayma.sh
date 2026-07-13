@@ -1,7 +1,10 @@
 ---
-# Changes the instance's domain without disturbing its current
+# Changes the instance's custom domain (the default <instance>.<platform_domain>
+# host always stays attached) without disturbing its current
 # running/suspended/stopped state (read off the live IngressRoute first,
-# same recovery technique as _set-instance-state.yml).
+# same recovery technique as _set-instance-state.yml). The new `custom_domain`
+# extra-var flows into vars/main.yml's instance_domains computation, so both
+# templates below just need re-rendering — no host regex-parsing needed.
 - name: Fetch the current IngressRoute
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -34,14 +37,14 @@
          else ('stopped' if (instance_name ~ '-stopped') in _edit_current_middlewares
          else 'running') }}
 
-- name: Reapply the TLS Certificate for the new domain
+- name: Reapply the TLS Certificate for the new domain set
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
     namespace: "{{ customer_slug }}"
     template: certificate.yaml.j2
 
-- name: "Reapply the IngressRoute for the new domain ({{ instance_state }})"
+- name: "Reapply the IngressRoute for the new domain set ({{ instance_state }})"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present

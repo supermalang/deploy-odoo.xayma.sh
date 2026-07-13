@@ -16,7 +16,7 @@ spec:
   routes:
 {% if instance_state | default('running') == 'running' %}
 {% if plan_workers | int > 0 %}
-    - match: Host(`{{ domain }}`) && PathPrefix(`/longpolling`)
+    - match: Host(`{{ instance_domains | join('`,`') }}`) && PathPrefix(`/longpolling`)
       kind: Rule
       priority: 100
       services:
@@ -26,7 +26,7 @@ spec:
         - name: {{ instance_name }}-errors-404
         - name: {{ instance_name }}-errors-50x
 {% endif %}
-    - match: Host(`{{ domain }}`)
+    - match: Host(`{{ instance_domains | join('`,`') }}`)
       kind: Rule
       priority: 50
       services:
@@ -36,7 +36,7 @@ spec:
         - name: {{ instance_name }}-errors-404
         - name: {{ instance_name }}-errors-50x
 {% else %}
-    - match: Host(`{{ domain }}`)
+    - match: Host(`{{ instance_domains | join('`,`') }}`)
       kind: Rule
       priority: 50
       services:
