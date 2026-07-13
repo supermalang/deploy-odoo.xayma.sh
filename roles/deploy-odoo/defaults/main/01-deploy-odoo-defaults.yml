@@ -44,20 +44,20 @@ platform_domain: xayma.net
 # intermediate object/from_json step. Defaults here are conservative
 # single-worker sizing; the app overrides them per-instance via extra_vars.
 plan_workers: 0
-plan_db_maxconn: 32
-plan_mem_soft: 536870912          # limit_memory_soft (bytes)
-plan_mem_hard: 1073741824         # limit_memory_hard (bytes)
+plan_db_maxconn: 16
+plan_mem_soft: 268435456          # 256Mi limit_memory_soft (bytes)
+plan_mem_hard: 402653184          # 384Mi limit_memory_hard (bytes) — keep BELOW plan_odoo_mem_limit so Odoo self-recycles before k8s OOMKills
 plan_max_cron_threads: 1
-plan_odoo_cpu_request: "250m"
-plan_odoo_mem_request: "512Mi"
+plan_odoo_cpu_request: "100m"
+plan_odoo_mem_request: "256Mi"    # ~idle usage; this is what counts for density
 plan_odoo_cpu_limit: "1"
-plan_odoo_mem_limit: "1Gi"
-plan_pg_cpu_request: "100m"
-plan_pg_mem_request: "256Mi"
+plan_odoo_mem_limit: "768Mi"      # ceiling that survives the init spike — don't go below
+plan_pg_cpu_request: "50m"
+plan_pg_mem_request: "128Mi"
 plan_pg_cpu_limit: "500m"
 plan_pg_mem_limit: "512Mi"
-plan_filestore_storage: "2Gi"
-plan_pg_storage: "2Gi"
+plan_filestore_storage: "1Gi"
+plan_pg_storage: "1Gi"
 plan_daily_enabled: "true"         # AWX has no boolean survey type; "true"/"false", consumed via | bool
 plan_daily_schedule: "0 3 * * *"
 plan_daily_retention: 7
