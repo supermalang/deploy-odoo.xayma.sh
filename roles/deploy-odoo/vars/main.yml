@@ -1,73 +1,181 @@
 ---
-# `customer`/`instancename`/`custom_domain`/`version` are the public interface
-# (extra_vars from the Xayma app, or the survey for manual runs); their
-# survey-fallback defaults live in defaults/main/01-deploy-odoo-defaults.yml
+# `customer`/`instancename`/`custom_domain`/`version`/`plan` are the public
+# interface (extra_vars from the Xayma app, or the survey for manual runs);
+# their survey-fallback defaults live in defaults/main/01-deploy-odoo-defaults.yml
 # (role defaults are the lowest-precedence layer, so extra_vars cleanly
-# override them there — defining them here instead, self-referencing their
+# override them there - defining them here instead, self-referencing their
 # own not-yet-overridden name for a `default()`, is circular: vars/main.yml
 # is a single precedence layer, so `customer: "{{ customer | default(...) }}"`
 # resolves `customer` against itself, not against a lower layer).
-# The flat `plan_*` vars are the app-supplied, fully-resolved sizing/feature
-# vars (see defaults/main/01-deploy-odoo-defaults.yml + tasks/_assert-plan.yml).
+#
+# POOL MODEL: `version`+`plan` select a shared pool (pool_id below), never a
+# per-tenant workload. Lifecycle actions that do NOT receive `version`/`plan`
+# as extra_vars (start/stop/suspend/restart/edit-domain/change-plan/delete/
+# backup/restore all only take `odoo_action`+identity vars, per README
+# "Actions") recover the tenant's CURRENT pool assignment from live
+# IngressRoute labels instead - see tasks/_recover-tenant.yml, which sets
+# `tenant_pool_id`/`tenant_version`/`tenant_plan`/`tenant_state`. Do not read
+# `pool_id`/`pool_labels` below for those actions.
 
 # --- Kubernetes naming (RFC-1123: lowercase, alnum + '-', <=63 chars) ---
-# k8s object names cannot contain underscores (the old role's `organization`/
-# `instancename` convention allowed them) so every identity var is slugified
-# before it touches a resource name/label. Slugify: lowercase, non [a-z0-9]
-# runs collapsed to a single '-', leading/trailing '-' trimmed, truncated to
-# 63 chars (single names below stay well under that; the checks exist for
-# unusually long customer/instance names).
+# k8s object names cannot contain underscores, so every identity var is
+# slugified before it touches a resource name/label. Slugify: lowercase,
+# non [a-z0-9] runs collapsed to a single '-', leading/trailing '-' trimmed,
+# truncated to 63 chars.
 customer_slug: >-
   {{ (customer | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('-+', '-') | trim('-'))[:63] }}
 instance_slug: >-
   {{ (instancename | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('-+', '-') | trim('-'))[:63] }}
 
-# Derived k8s object names.
-# instance_name doubles as the namespace-scoped "base name" for the Odoo
-# Deployment/Service/ConfigMap/Secret/PVCs/IngressRoute; pg_name is the
-# per-instance Postgres StatefulSet + headless Service.
-instance_name: "{{ customer_slug }}-{{ instance_slug }}-odoo{{ version }}"
-pg_name: "{{ instance_name }}-pg"
-# One shared suspend/stop/error backend per CUSTOMER namespace (not per
-# instance) — every instance's IngressRoute in this namespace points at the
-# same busybox+ConfigMap when suspended/stopped or on a 404/50x.
-suspend_backend_name: "{{ customer_slug }}-suspend"
+# Tenant "identity" object name (IngressRoute/Certificate/tenant Secret/Jobs).
+# No `-odoo{version}` suffix anymore - that named a per-instance WORKLOAD,
+# which no longer exists in the pool model. `customer` is kept in the name
+# purely for human readability in `kubectl get -n xayma-odoo`, since
+# instance_slug alone is already the globally-unique tenant/DB identifier
+# (guaranteed by the Xayma app - see README) and doubles as the Postgres
+# database name.
+tenant_name: "{{ customer_slug }}-{{ instance_slug }}"
+
+# --- Pool naming (version+plan -> shared compute; see defaults/main/00-plans.yml) ---
+pool_id: "odoo{{ version }}-{{ plan }}"
+pool_http_name: "{{ pool_id }}-http"
+pool_cron_name: "{{ pool_id }}-cron"
+pool_gevent_name: "{{ pool_id }}-gevent"
+pool_config_name: "{{ pool_id }}-config"
+pool_secret_name: "{{ pool_id }}-secret"
+pool_hpa_name: "{{ pool_id }}-hpa"
+pool_pdb_name: "{{ pool_id }}-pdb"
+# Postgres LOGIN role name - underscores (a PG identifier, not a k8s name),
+# exactly `pool_{version}_{plan}` per the target architecture.
+pool_pg_role: "pool_{{ version }}_{{ plan }}"
+
+# Annotation key recording the pool-scoped spec hash a pool was actually
+# built with (see tasks/_resolve-plan-spec.yml's `pool_spec_hash` and
+# tasks/_resolve-pool.yml's create-only semantics).
+pool_spec_hash_annotation_key: "xayma.sh/plan-spec-hash"
+
+# --- Postgres topology seam ---
+# Only 'shared' is implemented (see defaults' pg_topology + _assert-plan.yml,
+# which fails fast on anything else) - the other two branches exist so a
+# future topology change only has to extend this expression, never the task
+# files that consume `pg_target`.
+pg_target: >-
+  {{ 'pg' if pg_topology == 'shared'
+     else ('pg-odoo' ~ version) if pg_topology == 'per_version'
+     else ('pg-' ~ pool_id) if pg_topology == 'per_pool'
+     else 'INVALID-pg-topology' }}
+pg_pod_name: "pg-0"    # StatefulSet `pg`, replicas: 1 - only valid while pg_topology == shared
+
+# --- Fixed platform singleton names (one each, for the whole namespace) ---
+# PgBouncer/Redis are StatefulSets (1 replica, no real identity need) rather
+# than Deployments SPECIFICALLY for a deterministic pod name - both are
+# targeted by k8s_exec (PgBouncer RELOAD via SIGHUP, Redis session purge).
+pgbouncer_name: pgbouncer
+pgbouncer_pod_name: "{{ pgbouncer_name }}-0"
+redis_name: redis
+redis_pod_name: "{{ redis_name }}-0"    # StatefulSet `redis`, replicas: 1 - deterministic name needed for k8s_exec session purges
+postgres_exporter_name: postgres-exporter
+suspend_backend_name: suspend-backend
+pg_superuser_secret_name: pg-superuser
+redis_secret_name: redis-auth
+minio_secret_name: minio-credentials
+pgadmin_ro_role: pgadmin_ro
+backup_ro_role: backup_ro
+pgbouncer_auth_role: pgbouncer_auth
+pg_exporter_role: pg_exporter    # pg_monitor, not pg_read_all_data - a distinct least-privilege scope
 
 # --- Domains: default host always attached, optional custom host deduped ---
-# instancename is globally unique (guaranteed by the Xayma app), so the
-# default host needs no customer prefix. custom_domain is an optional extra
-# host from the app/survey; when blank or equal to the default it's dropped
-# rather than attached twice. Both the Certificate (dnsNames) and the
-# IngressRoute (Host(...) match) template off instance_domains.
+# instancename is globally unique, so the default host needs no customer
+# prefix. The wildcard Certificate (*.{{ platform_domain }}) already covers
+# default_domain - a per-tenant Certificate is only rendered for
+# custom_domain (see templates/tenant-certificate.yaml.j2).
 default_domain: "{{ instance_slug }}.{{ platform_domain }}"
 instance_domains: >-
   {{ [default_domain] + ([custom_domain] if (custom_domain is defined
      and (custom_domain | length) > 0 and custom_domain != default_domain)
      else []) }}
+# Every pool shares one dbfilter=^%d$ odoo.conf (see pool-configmap.yaml.j2),
+# which resolves the target database from the Host header's first label -
+# i.e. it only works when Host == "{{ instance_slug }}.<anything>". A
+# custom_domain request arrives with a different Host, so its IngressRoute
+# route attaches a Headers middleware rewriting the backend-bound Host to
+# default_domain before it reaches the pool - see
+# templates/tenant-ingressroute.yaml.j2.
+tenant_hostrewrite_mw_name: "{{ tenant_name }}-hostrewrite"
+# Per-tenant admission control (ratelimit is TENANT-scoped, not pool-scoped
+# - see README "Plan resolution") - one Traefik RateLimit Middleware per
+# tenant, sized from that tenant's resolved `tenant_spec.ratelimit`, rendered
+# alongside its IngressRoute (see templates/tenant-ingressroute.yaml.j2).
+tenant_ratelimit_mw_name: "{{ tenant_name }}-ratelimit"
 
-# --- Standard label block, applied to every resource this role creates ---
-# The three app.kubernetes.io/* keys match the platform-wide convention
-# (install-platform.xayma.sh CLAUDE.md); the xayma.sh/* keys are this role's
-# own addition, driving teardown-by-label and NetworkPolicy pod selectors.
-odoo_labels:
+# --- PgBouncer per-tenant entries ---
+# PgBouncer has no "per actual database name" cap that varies by pool/plan
+# out of the box under one wildcard `*` database line, so each tenant's
+# `tenant_db_max_connections` is materialized as its OWN explicit
+# `[databases]` line in a SEPARATE ConfigMap (`%include`d from the main
+# pgbouncer.ini - see templates/pgbouncer.yaml.j2), fully regenerated from
+# every live tenant's IngressRoute annotation on every deploy/change-plan/
+# delete (see tasks/_sync-pgbouncer-tenants.yml) - a full-replace, not an
+# incremental patch, so it can never drift or race.
+pgbouncer_tenants_configmap_name: pgbouncer-tenants
+tenant_db_max_connections_annotation_key: "xayma.sh/tenant-db-max-connections"
+
+# --- Standard label blocks ---
+# app.kubernetes.io/* matches the platform-wide convention
+# (install-platform.xayma.sh CLAUDE.md); xayma.sh/* is this role's own
+# addition. A pool is shared infrastructure and a tenant is not, so they get
+# label blocks - NetworkPolicy/HPA/PDB/teardown selectors are entirely
+# label-driven, same discipline as the old slice model, re-keyed for the
+# shared shape.
+platform_base_labels:
   app.kubernetes.io/part-of: xayma-platform
   app.kubernetes.io/managed-by: ansible
-  xayma.sh/customer: "{{ customer_slug }}"
-  xayma.sh/instance: "{{ instance_slug }}"
-  xayma.sh/odoo-version: "{{ version | string }}"
 
-odoo_labels_odoo: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'odoo'}) }}"
-odoo_labels_postgres: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'postgres'}) }}"
-odoo_labels_restore: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'restore'}) }}"
-odoo_labels_suspend: "{{ odoo_labels | combine({'app.kubernetes.io/name': 'suspend-backend'}) }}"
+pool_labels: >-
+  {{ platform_base_labels | combine({
+       'app.kubernetes.io/name': 'odoo',
+       'xayma.sh/pool-id': pool_id,
+       'xayma.sh/odoo-version': version | string,
+       'xayma.sh/plan': plan}) }}
+pool_labels_http: "{{ pool_labels | combine({'xayma.sh/pool-role': 'http'}) }}"
+pool_labels_cron: "{{ pool_labels | combine({'xayma.sh/pool-role': 'cron'}) }}"
+pool_labels_gevent: "{{ pool_labels | combine({'xayma.sh/pool-role': 'gevent'}) }}"
 
-# --- Stateless per-instance secret derivation ---
-# The Xayma app's extra_vars carry no per-instance password fields (this role
-# is a stateless executor — it must not persist or look anything up), so the
-# actual DB password and Odoo master password are derived deterministically
-# from a per-role vault "seed" plus the customer/instance slugs. Same idiom as
-# deploy-traefik's dashboard-basicauth bcrypt-salt trick in the platform repo:
-# deterministic input -> idempotent output, no random-per-run drift, and no
-# need to persist a generated secret anywhere.
-_odoo_db_password: "{{ (vault_odoo_db_password ~ '|' ~ customer_slug ~ '|' ~ instance_slug) | hash('sha256') }}"
+tenant_labels: >-
+  {{ platform_base_labels | combine({
+       'xayma.sh/customer': customer_slug,
+       'xayma.sh/instance': instance_slug}) }}
+# Applied on top of tenant_labels for the tenant's IngressRoute ONLY - the
+# durable record of pool assignment/state that _recover-tenant.yml reads
+# back on every action that doesn't get version/plan resupplied.
+tenant_pool_assignment_labels: >-
+  {{ tenant_labels | combine({
+       'xayma.sh/pool-id': pool_id,
+       'xayma.sh/odoo-version': version | string,
+       'xayma.sh/plan': plan,
+       'xayma.sh/state': instance_state | default('running')}) }}
+# Annotation (not a label - an operational value, not a selector target)
+# recording this tenant's current PgBouncer cap, so
+# tasks/_sync-pgbouncer-tenants.yml can regenerate the full tenants.ini from
+# nothing but a list of live IngressRoutes.
+tenant_pool_assignment_annotations: >-
+  {{ {tenant_db_max_connections_annotation_key: tenant_spec.tenant_db_max_connections | string} }}
+
+# Job pods (init/fixup/restore/backup/sync-addons) - `xayma.sh/job-role`
+# drives the jobs->pg/jobs->pgbouncer/jobs->redis NetworkPolicy selectors
+# (see templates/networkpolicies-platform.yaml.j2).
+tenant_job_labels: >-
+  {{ tenant_labels | combine({'xayma.sh/job-role': _job_role | default('job')}) }}
+
+# --- Stateless secret derivation ---
+# Same idiom throughout: deterministic hash(seed ~ '|' ~ scope) so nothing
+# generated is ever persisted, and rotating a vault seed rotates every
+# derived secret in that scope on the next apply.
 _odoo_admin_password: "{{ (vault_odoo_admin_password ~ '|' ~ customer_slug ~ '|' ~ instance_slug) | hash('sha256') }}"
+_pool_db_password: "{{ (vault_odoo_db_password ~ '|' ~ pool_id) | hash('sha256') }}"
+_pg_superuser_password: "{{ (vault_odoo_platform_password ~ '|' ~ 'pg-superuser') | hash('sha256') }}"
+_pgadmin_ro_password: "{{ (vault_odoo_platform_password ~ '|' ~ 'pgadmin-ro') | hash('sha256') }}"
+_backup_ro_password: "{{ (vault_odoo_platform_password ~ '|' ~ 'backup-ro') | hash('sha256') }}"
+_pgbouncer_auth_password: "{{ (vault_odoo_platform_password ~ '|' ~ 'pgbouncer-auth') | hash('sha256') }}"
+_pg_exporter_password: "{{ (vault_odoo_platform_password ~ '|' ~ 'pg-exporter') | hash('sha256') }}"
+_redis_password: "{{ (vault_odoo_platform_password ~ '|' ~ 'redis') | hash('sha256') }}"

@@ -1,18 +1,37 @@
 #jinja2: lstrip_blocks: True
 ---
-# One namespace per customer, holding every Odoo instance for that customer.
-# xayma.sh/network-zone: webservers is NOT for the platform's static
-# platform_namespaces loop (deploy-network-policies never sees this
-# namespace) — it's so the platform's existing "databases <- webservers"
-# NetworkPolicy (a live namespaceSelector, not a static list) recognizes this
-# namespace's restore Job as an allowed source when it reaches the platform
-# MinIO. This role writes its own default-deny + scoped-allow policies for
-# everything else — see networkpolicies.yaml.j2.
+# ONE namespace for the entire Odoo tier (see README "Architecture") -
+# xayma.sh/network-zone: webservers is NOT for deploy-network-policies'
+# static platform_namespaces loop (it never sees this namespace) - it's so
+# the platform's existing "databases <- webservers" NetworkPolicy (a live
+# namespaceSelector, not a static list) recognizes this namespace's
+# restore/backup/sync-addons Jobs as an allowed source when they reach the
+# platform MinIO. This role writes its own default-deny + scoped-allow
+# policies for everything else - see networkpolicies-platform.yaml.j2.
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ customer_slug }}
+  name: {{ xayma_namespace }}
   labels:
     xayma.sh/network-zone: webservers
     app.kubernetes.io/part-of: xayma-platform
     app.kubernetes.io/managed-by: ansible
+---
+# Guardrail against Job pileups - init/fixup/restore/backup/sync-addons/
+# fileops Jobs for EVERY tenant now land in this one namespace (see
+# defaults/main/01-deploy-odoo-defaults.yml `resourcequota`).
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: xayma-odoo-quota
+  namespace: {{ xayma_namespace }}
+  labels:
+    app.kubernetes.io/part-of: xayma-platform
+    app.kubernetes.io/managed-by: ansible
+spec:
+  hard:
+    pods: "{{ resourcequota.pods }}"
+    requests.cpu: "{{ resourcequota.requests_cpu }}"
+    requests.memory: "{{ resourcequota.requests_memory }}"
+    limits.cpu: "{{ resourcequota.limits_cpu }}"
+    limits.memory: "{{ resourcequota.limits_memory }}"

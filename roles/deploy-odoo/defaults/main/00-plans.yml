@@ -1,0 +1,85 @@
+---
+# FALLBACK plan catalog for shared Odoo pools (see README "Plan
+# resolution"). The Xayma app is now the source of truth: every real launch
+# sends `plan` (a name) AND `plan_spec` (the full nested spec dict) as
+# extra_vars - this catalog is consulted ONLY when plan_spec is absent
+# (manual CLI/AWX-survey runs that only set `plan`). Precedence, resolved by
+# tasks/_resolve-plan-spec.yml:
+#   plan_spec (app/extra_var) > plans[plan] (this catalog) >
+#   plan_spec_hard_fallback (defaults/main/01-deploy-odoo-defaults.yml, used
+#   when `plan` doesn't even match a catalog entry)
+#
+# This replaces the earlier "role owns the plan catalog by name, app never
+# sends sizing" doctrine: the app now owns the commercial AND physical spec
+# (it already has to represent plan sizing somewhere for its own billing/UI,
+# so duplicating it here as the single source of truth removes a
+# synchronization problem) - the role's copy here exists purely as a
+# manual-run safety net, not as the thing real launches rely on.
+#
+# Schema (exact key names - see README "Plan resolution" for the pool-scoped
+# vs tenant-scoped split and what each governs):
+#   workers, replicas_min, replicas_max     - POOL-scoped
+#   pod: {cpu_request, cpu_limit, mem_request, mem_limit}   - POOL-scoped
+#   limits: {mem_soft, mem_hard, time_cpu, time_real, request}  - POOL-scoped
+#   cron: {threads}                         - POOL-scoped
+#   db_maxconn                              - POOL-scoped (odoo.conf db_maxconn,
+#                                              per-worker-process PG demand -
+#                                              NOT the same lever as
+#                                              tenant_db_max_connections below)
+#   init_modules                            - TENANT-scoped
+#   tenant_db_max_connections               - TENANT-scoped (PgBouncer's
+#                                              per-tenant-database cap - THE
+#                                              real per-tenant throttle)
+#   ratelimit: {avg, burst}                 - TENANT-scoped
+#
+# POOL-scoped keys are CREATE-ONLY (see tasks/_resolve-pool.yml) - they are
+# only applied the first time a given (version, plan) pool is created;
+# changing them here later does NOT resize an existing pool. Resizing an
+# existing pool is odoo_action=apply-plan.
+plans:
+  standard:
+    workers: 2
+    replicas_min: 1
+    replicas_max: 4
+    pod:
+      cpu_request: "250m"
+      cpu_limit: "1"
+      mem_request: "512Mi"
+      mem_limit: "1Gi"
+    limits:
+      mem_soft: 536870912         # 512Mi - keep BELOW pod.mem_limit above
+      mem_hard: 805306368         # 768Mi - keep BELOW pod.mem_limit above
+      time_cpu: 120
+      time_real: 300
+      request: 8196
+    cron:
+      threads: 1
+    db_maxconn: 8
+    init_modules: "base,account,contacts,l10n_sn"
+    tenant_db_max_connections: 10
+    ratelimit:
+      avg: 10
+      burst: 30
+  premium:
+    workers: 4
+    replicas_min: 2
+    replicas_max: 6
+    pod:
+      cpu_request: "500m"
+      cpu_limit: "2"
+      mem_request: "1Gi"
+      mem_limit: "2Gi"
+    limits:
+      mem_soft: 1073741824        # 1Gi - keep BELOW pod.mem_limit above
+      mem_hard: 1610612736        # 1.5Gi - keep BELOW pod.mem_limit above
+      time_cpu: 120
+      time_real: 300
+      request: 8196
+    cron:
+      threads: 2
+    db_maxconn: 16
+    init_modules: "base,account,contacts,l10n_sn,sale_management,purchase"
+    tenant_db_max_connections: 20
+    ratelimit:
+      avg: 25
+      burst: 75

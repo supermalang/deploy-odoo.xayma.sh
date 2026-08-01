@@ -1,0 +1,42 @@
+---
+# include_tasks helper shared by backup-tenant.yml and delete-tenant.yml's
+# final safety backup. Required param: `_backup_kind` (daily|adhoc). Lands
+# in MinIO at snapshots/{customer}/{instance}/{_backup_kind}/{timestamp}/ -
+# the same layout tasks/restore-tenant.yml expects.
+- name: "[{{ tenant_name }}] Apply the backup Job"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: job-backup.yaml.j2
+  register: _backup_job
+
+- name: "[{{ tenant_name }}] Wait for the backup Job to complete"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Job
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ _backup_job.result.metadata.name }}"
+  register: _backup_job_status
+  until: >-
+    _backup_job_status.resources | length > 0 and
+    (_backup_job_status.resources[0].status.succeeded | default(0) | int > 0 or
+     _backup_job_status.resources[0].status.failed | default(0) | int > 0)
+  retries: 90
+  delay: 10
+
+- name: "[{{ tenant_name }}] Surface the backup Job's pod logs on failure"
+  kubernetes.core.k8s_log:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "job-name={{ _backup_job.result.metadata.name }}"
+  register: _backup_job_logs
+  when: _backup_job_status.resources[0].status.failed | default(0) | int > 0
+
+- name: "[{{ tenant_name }}] Assert the backup Job succeeded"
+  ansible.builtin.assert:
+    that: _backup_job_status.resources[0].status.succeeded | default(0) | int > 0
+    fail_msg: >-
+      {{ _backup_job.result.metadata.name }} failed - pod logs:
+      {{ _backup_job_logs.log | default('(no logs captured)') }}

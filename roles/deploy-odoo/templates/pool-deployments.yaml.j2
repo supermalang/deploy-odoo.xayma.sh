@@ -1,0 +1,299 @@
+#jinja2: lstrip_blocks: True
+---
+# {pool}-http: prefork mode, the ONLY autoscaled Deployment (see
+# pool-hpa.yaml.j2). db_host=PgBouncer.
+#
+# session_redis config (ALL three Deployments) is entirely
+# ODOO_SESSION_REDIS_* environment variables, not odoo.conf - verified
+# against camptocamp/odoo-cloud-platform's http.py (19.0 branch).
+# ODOO_SESSION_REDIS_SSL=0 is REQUIRED (the module defaults to SSL=1; our
+# Redis doesn't terminate TLS at all). ODOO_SESSION_REDIS_PREFIX is set to
+# this POOL's id, not the tenant - the module has no per-tenant/per-db key
+# segment at all, only a `db` field inside the stored session VALUE (see
+# README "Known caveats" on why session purge filters on that field).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ pool_http_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ pool_labels_http | to_json }}
+  annotations:
+    {{ pool_spec_hash_annotation_key }}: "{{ pool_spec_hash }}"
+spec:
+  replicas: {{ pool_spec.replicas_min }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: odoo
+      xayma.sh/pool-id: {{ pool_id }}
+      xayma.sh/pool-role: http
+  template:
+    metadata:
+      labels: {{ pool_labels_http | to_json }}
+    spec:
+      # Preferred, not required (see README "Before adding node 2") -
+      # correct-but-inert on a single node; pods just co-locate happily.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: odoo
+                    xayma.sh/pool-id: {{ pool_id }}
+                    xayma.sh/pool-role: http
+      initContainers:
+        - name: render-config
+          image: busybox:{{ versions.busybox }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              sed
+              -e "s|\${DB_USER}|$DB_USER|g"
+              -e "s|\${DB_PASSWORD}|$DB_PASSWORD|g"
+              -e "s|\${DB_HOST}|$DB_HOST|g"
+              /config/odoo.conf > /etc/odoo/odoo.conf
+          env:
+            - {name: DB_HOST, value: "{{ pgbouncer_name }}"}
+          envFrom:
+            - secretRef: {name: "{{ pool_secret_name }}"}
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: etc-odoo, mountPath: /etc/odoo}
+      containers:
+        - name: odoo
+          image: "{{ odoo_image_repo }}:{{ version }}.0"
+          command: ["odoo"]
+          args: ["-c", "/etc/odoo/odoo.conf", "--workers={{ pool_spec.workers }}", "--max-cron-threads=0"]
+          env:
+            - {name: ODOO_SESSION_REDIS, value: "1"}
+            - {name: ODOO_SESSION_REDIS_HOST, value: "{{ redis_name }}"}
+            - {name: ODOO_SESSION_REDIS_PORT, value: "6379"}
+            - {name: ODOO_SESSION_REDIS_SSL, value: "0"}
+            - {name: ODOO_SESSION_REDIS_PREFIX, value: "{{ pool_id }}"}
+            - name: ODOO_SESSION_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: "{{ redis_secret_name }}", key: REDIS_PASSWORD}
+          ports:
+            - {name: http, containerPort: 8069}
+          volumeMounts:
+            - {name: etc-odoo, mountPath: /etc/odoo}
+            - {name: filestore, mountPath: /var/lib/odoo}
+            - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
+          resources:
+            requests: {cpu: "{{ pool_spec.pod.cpu_request }}", memory: "{{ pool_spec.pod.mem_request }}"}
+            limits: {cpu: "{{ pool_spec.pod.cpu_limit }}", memory: "{{ pool_spec.pod.mem_limit }}"}
+          startupProbe:
+            httpGet: {path: /web/health, port: 8069}
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /web/health, port: 8069}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: {path: /web/health, port: 8069}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 6
+      volumes:
+        - {name: config, configMap: {name: "{{ pool_config_name }}"}}
+        - {name: etc-odoo, emptyDir: {}}
+        - {name: filestore, persistentVolumeClaim: {claimName: odoo-filestore}}
+        - {name: addons, persistentVolumeClaim: {claimName: odoo-addons}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ pool_http_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ pool_labels_http | to_json }}
+spec:
+  selector:
+    app.kubernetes.io/name: odoo
+    xayma.sh/pool-id: {{ pool_id }}
+    xayma.sh/pool-role: http
+  ports:
+    - {name: http, port: 8069, targetPort: 8069}
+---
+# {pool}-cron: exactly 1 replica, NEVER scaled, workers=0 (threaded), its
+# own max_cron_threads, db_host=Postgres DIRECT. No Service - nothing
+# routes traffic here; it still runs a normal single Odoo process
+# internally (workers=0), just unreachable except via cron duty.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ pool_cron_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ pool_labels_cron | to_json }}
+  annotations:
+    {{ pool_spec_hash_annotation_key }}: "{{ pool_spec_hash }}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: odoo
+      xayma.sh/pool-id: {{ pool_id }}
+      xayma.sh/pool-role: cron
+  template:
+    metadata:
+      labels: {{ pool_labels_cron | to_json }}
+    spec:
+      initContainers:
+        - name: render-config
+          image: busybox:{{ versions.busybox }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              sed
+              -e "s|\${DB_USER}|$DB_USER|g"
+              -e "s|\${DB_PASSWORD}|$DB_PASSWORD|g"
+              -e "s|\${DB_HOST}|$DB_HOST|g"
+              /config/odoo.conf > /etc/odoo/odoo.conf
+          env:
+            - {name: DB_HOST, value: "{{ pg_target }}"}
+          envFrom:
+            - secretRef: {name: "{{ pool_secret_name }}"}
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: etc-odoo, mountPath: /etc/odoo}
+      containers:
+        - name: odoo
+          image: "{{ odoo_image_repo }}:{{ version }}.0"
+          command: ["odoo"]
+          args: ["-c", "/etc/odoo/odoo.conf", "--workers=0", "--max-cron-threads={{ pool_spec.cron.threads }}"]
+          env:
+            - {name: ODOO_SESSION_REDIS, value: "1"}
+            - {name: ODOO_SESSION_REDIS_HOST, value: "{{ redis_name }}"}
+            - {name: ODOO_SESSION_REDIS_PORT, value: "6379"}
+            - {name: ODOO_SESSION_REDIS_SSL, value: "0"}
+            - {name: ODOO_SESSION_REDIS_PREFIX, value: "{{ pool_id }}"}
+            - name: ODOO_SESSION_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: "{{ redis_secret_name }}", key: REDIS_PASSWORD}
+          ports:
+            - {name: http, containerPort: 8069}
+          volumeMounts:
+            - {name: etc-odoo, mountPath: /etc/odoo}
+            - {name: filestore, mountPath: /var/lib/odoo}
+            - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
+          resources:
+            requests: {cpu: "{{ pool_spec.pod.cpu_request }}", memory: "{{ pool_spec.pod.mem_request }}"}
+            limits: {cpu: "{{ pool_spec.pod.cpu_limit }}", memory: "{{ pool_spec.pod.mem_limit }}"}
+          startupProbe:
+            httpGet: {path: /web/health, port: 8069}
+            periodSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /web/health, port: 8069}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 6
+      volumes:
+        - {name: config, configMap: {name: "{{ pool_config_name }}"}}
+        - {name: etc-odoo, emptyDir: {}}
+        - {name: filestore, persistentVolumeClaim: {claimName: odoo-filestore}}
+        - {name: addons, persistentVolumeClaim: {claimName: odoo-addons}}
+---
+# {pool}-gevent: 1 replica, db_host=Postgres DIRECT, Service :8072.
+# ODOO_GEVENT_PORT makes Odoo's own bootstrap run ONLY the gevent/
+# long-polling server (monkey-patched, evented) instead of the normal
+# multi-worker bootstrap - the standard technique for splitting long-polling
+# into its own pod without a separate binary/flag.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ pool_gevent_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ pool_labels_gevent | to_json }}
+  annotations:
+    {{ pool_spec_hash_annotation_key }}: "{{ pool_spec_hash }}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: odoo
+      xayma.sh/pool-id: {{ pool_id }}
+      xayma.sh/pool-role: gevent
+  template:
+    metadata:
+      labels: {{ pool_labels_gevent | to_json }}
+    spec:
+      initContainers:
+        - name: render-config
+          image: busybox:{{ versions.busybox }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              sed
+              -e "s|\${DB_USER}|$DB_USER|g"
+              -e "s|\${DB_PASSWORD}|$DB_PASSWORD|g"
+              -e "s|\${DB_HOST}|$DB_HOST|g"
+              /config/odoo.conf > /etc/odoo/odoo.conf
+          env:
+            - {name: DB_HOST, value: "{{ pg_target }}"}
+          envFrom:
+            - secretRef: {name: "{{ pool_secret_name }}"}
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: etc-odoo, mountPath: /etc/odoo}
+      containers:
+        - name: odoo
+          image: "{{ odoo_image_repo }}:{{ version }}.0"
+          command: ["odoo"]
+          args: ["-c", "/etc/odoo/odoo.conf", "--workers=0", "--max-cron-threads=0"]
+          env:
+            - {name: ODOO_GEVENT_PORT, value: "8072"}
+            - {name: ODOO_SESSION_REDIS, value: "1"}
+            - {name: ODOO_SESSION_REDIS_HOST, value: "{{ redis_name }}"}
+            - {name: ODOO_SESSION_REDIS_PORT, value: "6379"}
+            - {name: ODOO_SESSION_REDIS_SSL, value: "0"}
+            - {name: ODOO_SESSION_REDIS_PREFIX, value: "{{ pool_id }}"}
+            - name: ODOO_SESSION_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: "{{ redis_secret_name }}", key: REDIS_PASSWORD}
+          ports:
+            - {name: longpolling, containerPort: 8072}
+          volumeMounts:
+            - {name: etc-odoo, mountPath: /etc/odoo}
+            - {name: filestore, mountPath: /var/lib/odoo}
+            - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
+          resources:
+            requests: {cpu: "{{ pool_spec.pod.cpu_request }}", memory: "{{ pool_spec.pod.mem_request }}"}
+            limits: {cpu: "{{ pool_spec.pod.cpu_limit }}", memory: "{{ pool_spec.pod.mem_limit }}"}
+          startupProbe:
+            tcpSocket: {port: 8072}
+            periodSeconds: 10
+            failureThreshold: 60
+          livenessProbe:
+            tcpSocket: {port: 8072}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 6
+      volumes:
+        - {name: config, configMap: {name: "{{ pool_config_name }}"}}
+        - {name: etc-odoo, emptyDir: {}}
+        - {name: filestore, persistentVolumeClaim: {claimName: odoo-filestore}}
+        - {name: addons, persistentVolumeClaim: {claimName: odoo-addons}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ pool_gevent_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ pool_labels_gevent | to_json }}
+spec:
+  selector:
+    app.kubernetes.io/name: odoo
+    xayma.sh/pool-id: {{ pool_id }}
+    xayma.sh/pool-role: gevent
+  ports:
+    - {name: longpolling, port: 8072, targetPort: 8072}

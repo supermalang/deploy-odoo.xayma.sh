@@ -1,0 +1,104 @@
+---
+# Final adhoc backup -> DROP DATABASE -> remove the tenant's PgBouncer entry
+# -> delete filestore dir -> delete every labelled tenant object -> if that
+# was the pool's last tenant, scale the pool to 0 (its objects are NEVER
+# deleted - see README).
+- import_tasks: _recover-tenant.yml
+- import_tasks: _pg-connection.yml
+
+- name: "[{{ tenant_name }}] Set the final safety backup kind"
+  ansible.builtin.set_fact:
+    _backup_kind: adhoc
+
+- import_tasks: _run-tenant-backup.yml
+
+- name: "[{{ tenant_name }}] Fence the tenant database before dropping it"
+  community.postgresql.postgresql_privs:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    database: postgres
+    type: database
+    objs: "{{ instance_slug }}"
+    privs: CONNECT
+    roles: PUBLIC
+    state: absent
+
+- name: "[{{ tenant_name }}] Terminate any live backends on this tenant's database"
+  community.postgresql.postgresql_query:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    db: postgres
+    query: "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %(dbname)s"
+    named_args:
+      dbname: "{{ instance_slug }}"
+
+- name: "[{{ tenant_name }}] DROP the tenant database"
+  community.postgresql.postgresql_db:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    name: "{{ instance_slug }}"
+    state: absent
+
+- name: "[{{ tenant_name }}] Delete the tenant's filestore directory"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: job-fileops.yaml.j2
+  vars:
+    _fileops_name: "delete-filestore-{{ instance_slug }}"
+    _fileops_command: >-
+      rm -rf "/filestore/{{ instance_slug }}"
+
+- name: "[{{ tenant_name }}] Delete all labelled resources for this tenant"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: absent
+    namespace: "{{ xayma_namespace }}"
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    label_selectors:
+      - "xayma.sh/customer={{ customer_slug }}"
+      - "xayma.sh/instance={{ instance_slug }}"
+  loop:
+    - {api_version: batch/v1, kind: Job}
+    - {api_version: traefik.io/v1alpha1, kind: IngressRoute}
+    - {api_version: traefik.io/v1alpha1, kind: Middleware}
+    - {api_version: cert-manager.io/v1, kind: Certificate}
+    - {api_version: v1, kind: Secret}
+  loop_control:
+    label: "{{ item.kind }}"
+
+# Regenerated AFTER the IngressRoute above is gone, so this tenant naturally
+# drops out of the tenants.ini - no override needed.
+- name: "[{{ tenant_name }}] Remove this tenant's PgBouncer per-db entry"
+  ansible.builtin.include_tasks: _sync-pgbouncer-tenants.yml
+
+- name: "[{{ tenant_name }}] Count remaining tenants on the pool ({{ tenant_pool_id }})"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: IngressRoute
+    api_version: traefik.io/v1alpha1
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "xayma.sh/pool-id={{ tenant_pool_id }}"
+  register: _delete_remaining_pool_tenants
+
+- name: "[{{ tenant_name }}] Scale the pool ({{ tenant_pool_id }}) to 0 - no tenants remain"
+  kubernetes.core.k8s_scale:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ item }}"
+    replicas: 0
+    wait: false
+  loop:
+    - "{{ tenant_pool_id }}-http"
+    - "{{ tenant_pool_id }}-cron"
+    - "{{ tenant_pool_id }}-gevent"
+  loop_control:
+    label: "{{ item }}"
+  when: _delete_remaining_pool_tenants.resources | length == 0

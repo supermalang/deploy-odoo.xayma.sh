@@ -1,0 +1,13 @@
+---
+# Single-tenant pg_dump + filestore tar -> MinIO. Designed to be driven by
+# an AWX schedule the calling app loops per active tenant (see README "AWX"
+# - AWX Schedules bind to one Job Template with fixed extra_vars, so
+# multi-tenant iteration is app-driven, not something this role or
+# configure-awx codifies per tenant).
+- import_tasks: _recover-tenant.yml
+
+- name: "[{{ tenant_name }}] Determine the snapshot kind"
+  ansible.builtin.set_fact:
+    _backup_kind: "{{ snapshot_kind | default('daily') }}"
+
+- import_tasks: _run-tenant-backup.yml

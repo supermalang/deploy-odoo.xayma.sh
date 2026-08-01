@@ -1,0 +1,85 @@
+#jinja2: lstrip_blocks: True
+---
+# Restore a snapshot identified by `snapshot_id` (the timestamp prefix of a
+# backup uploaded by odoo_action=backup, pathed
+# snapshots/{customer}/{instance}/{snapshot_kind}/{snapshot_id}/ in the
+# platform MinIO) of kind `snapshot_kind` (daily|adhoc, default daily).
+# tasks/restore-tenant.yml REVOKEs the pool role's CONNECT + terminates
+# backends before applying this and re-GRANTs afterwards - no scaling steps
+# (there is no per-tenant process to scale in the pool model). Filestore
+# restore is scoped to THIS TENANT's own subdirectory
+# (/filestore/{{ '{{ instance_slug }}' }}) only - the PVC is shared by
+# every tenant now, unlike the old per-instance role.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: restore-{{ instance_slug }}-{{ ansible_date_time.iso8601_basic_short | lower }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ tenant_labels | combine({'xayma.sh/job-role': 'restore'}) | to_json }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {{ tenant_labels | combine({'xayma.sh/job-role': 'restore'}) | to_json }}
+    spec:
+      restartPolicy: Never
+      priorityClassName: {{ priorityclass.name }}
+      initContainers:
+        - name: rclone-download
+          image: rclone/rclone:{{ versions.rclone }}
+          command:
+            - /bin/sh
+            - -c
+            - >-
+              set -eu;
+              rclone copy
+              snapshot:{{ odoo.snapshot_bucket }}/{{ customer_slug }}/{{ instance_slug }}/{{ snapshot_kind | default('daily') }}/{{ snapshot_id }}/
+              /restore/
+          env:
+            - {name: RCLONE_CONFIG_SNAPSHOT_TYPE, value: s3}
+            - {name: RCLONE_CONFIG_SNAPSHOT_PROVIDER, value: Other}
+            - {name: RCLONE_CONFIG_SNAPSHOT_ENDPOINT, value: {{ odoo.snapshot_endpoint | to_json }}}
+            - {name: RCLONE_CONFIG_SNAPSHOT_ACL, value: private}
+          envFrom:
+            - secretRef: {name: "{{ minio_secret_name }}"}
+          volumeMounts:
+            - {name: restore, mountPath: /restore}
+        - name: pg-restore
+          image: postgres:{{ versions.postgres }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              PGPASSWORD="$POSTGRES_PASSWORD" dropdb -h {{ pg_target }} -U postgres --if-exists {{ instance_slug }};
+              PGPASSWORD="$POSTGRES_PASSWORD" createdb -h {{ pg_target }} -U postgres -O {{ tenant_pg_role }} {{ instance_slug }};
+              gunzip -c /restore/db.sql.gz | PGPASSWORD="$POSTGRES_PASSWORD" psql -h {{ pg_target }} -U postgres {{ instance_slug }}
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ pg_superuser_secret_name }}"
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - {name: restore, mountPath: /restore}
+      containers:
+        - name: filestore-restore
+          image: busybox:{{ versions.busybox }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              mkdir -p /filestore/{{ instance_slug }};
+              rm -rf /filestore/{{ instance_slug }}/* /filestore/{{ instance_slug }}/..?* /filestore/{{ instance_slug }}/.[!.]* 2>/dev/null || true;
+              tar xzf /restore/filestore.tar.gz -C /filestore/{{ instance_slug }}
+          volumeMounts:
+            - {name: restore, mountPath: /restore}
+            - {name: filestore, mountPath: /filestore}
+      volumes:
+        - {name: restore, emptyDir: {}}
+        - name: filestore
+          persistentVolumeClaim:
+            claimName: odoo-filestore

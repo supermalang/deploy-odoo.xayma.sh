@@ -1,18 +1,36 @@
 ---
-# Required for odoo_action=deploy/restart only (see main.yml). This
-# role is a stateless executor: it ships NO `plans:` dict and does not look
-# anything up — the Xayma app resolves the plan and passes it as flat
-# plan_* extra_vars (see defaults/main/01-deploy-odoo-defaults.yml for the
-# full list and its defaults). No shape assertion is needed here: every
-# plan_* var already has a role default, and AWX/the app enforce its type.
-- name: Assert this role's own vault secrets are set
+# Required for odoo_action=deploy/change-plan/apply-plan only (see main.yml).
+# This only asserts `plan` slugifies to a valid k8s name component (it lands
+# in pool_id/PG role names) and that the configured pg_topology is
+# implemented - the actual plan_spec resolution/validation (precedence,
+# shape, mem ceilings) happens later, per-call, via
+# tasks/_resolve-plan-spec.yml (imported by deploy-tenant.yml/change-plan.yml/
+# apply-plan.yml directly) - it isn't done here because change-plan's target
+# plan and apply-plan's plan aren't always the same value `plan` might mean
+# in every caller, and because unlike the old model there is no fixed
+# "known plans" set to check membership against anymore (see README "Plan
+# resolution" - an unrecognized name just falls through to the hard fallback
+# spec rather than failing).
+- name: Assert the plan name slugifies to a valid k8s name component
   ansible.builtin.assert:
     that:
-      - vault_odoo_db_password | default('') | length > 0
-      - vault_odoo_admin_password | default('') | length > 0
-      - vault_odoo_minio_access_key | default('') | length > 0
-      - vault_odoo_minio_secret_key | default('') | length > 0
+      - plan is defined
+      - plan | string is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
     fail_msg: >-
-      One or more vault_odoo_* secrets are unset. Copy
-      defaults/main/02-credentials.yml.example, fill it in, and encrypt it
-      with ansible-vault as defaults/main/02-credentials.yml.
+      plan ({{ plan | default('UNSET') }}) must be set and slugify to a
+      valid RFC-1123 name component - it lands in pool_id
+      (odoo{{ version | default('<version>') }}-{{ plan | default('<plan>') }})
+      and the pool's PG role name.
+
+# Only 'shared' (one Postgres for the whole tier) is wired up today - see
+# vars/main.yml's `pg_target` seam. Checked here (not just once at
+# bootstrap) because deploy/change-plan/apply-plan all compute a fresh
+# pool_id/pg_target for whichever pool they're about to touch.
+- name: Assert the configured pg_topology is one this role can act on
+  ansible.builtin.assert:
+    that: pg_topology == 'shared'
+    fail_msg: >-
+      pg_topology={{ pg_topology }} is reserved for future implementation -
+      only 'shared' is implemented today. The pg_target seam exists in
+      vars/main.yml so per_version/per_pool can be added later without
+      touching task logic.

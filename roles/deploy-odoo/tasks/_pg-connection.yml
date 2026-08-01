@@ -1,0 +1,26 @@
+---
+# include_tasks helper - resolves the shared Postgres's ClusterIP so every
+# community.postgresql task can connect directly from the control node
+# (see requirements.yml + pg-statefulset.yaml.j2 for why this is a real
+# ClusterIP, not headless). Safe to include multiple times per play (cheap,
+# idempotent lookup) - imported at the top of every task file that performs
+# direct PG admin work.
+- name: "Resolve the shared Postgres Service ClusterIP"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Service
+    namespace: "{{ xayma_namespace }}"
+    name: pg
+  register: _pgconn_service
+
+- name: "Assert the shared Postgres Service exists"
+  ansible.builtin.assert:
+    that: _pgconn_service.resources | length > 0
+    fail_msg: >-
+      Service pg does not exist in {{ xayma_namespace }} yet - run
+      odoo_action=deploy for at least one tenant first (it bootstraps the
+      shared Postgres via _ensure-platform.yml).
+
+- name: "Set the Postgres connection host fact"
+  ansible.builtin.set_fact:
+    pg_conn_host: "{{ _pgconn_service.resources[0].spec.clusterIP }}"

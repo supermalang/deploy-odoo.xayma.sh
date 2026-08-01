@@ -1,30 +1,34 @@
 #jinja2: lstrip_blocks: True
 ---
-# Filestore (/var/lib/odoo) — sized from the app-supplied plan_filestore_storage.
+# Namespace-wide singletons (was per-instance in the slice model) - every
+# tenant lives under filestore/{{ '{slug}' }}/ on this ONE PVC. Mounted RW
+# by every pool pod + Job.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ instance_name }}-filestore
-  namespace: {{ customer_slug }}
-  labels: {{ odoo_labels_odoo | to_json }}
+  name: odoo-filestore
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
 spec:
   accessModes: ["ReadWriteOnce"]
   storageClassName: {{ odoo.storage_class }}
   resources:
     requests:
-      storage: {{ plan_filestore_storage }}
+      storage: {{ odoo.filestore_storage }}
 ---
-# Addons (/opt/extra-addons) — populated out-of-band (ops/CI), not sized by
-# the plan_* vars; starts at a fixed default.
+# Community/custom addons (incl. session_redis) - populated out-of-band via
+# odoo_action=sync-addons, mounted READ-ONLY by every pool pod + init/fixup
+# Job (job-init.yaml.j2/job-fixup.yaml.j2 mount it ro; job-sync-addons.yaml.j2
+# is the one exception that mounts it read-write).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ instance_name }}-addons
-  namespace: {{ customer_slug }}
-  labels: {{ odoo_labels_odoo | to_json }}
+  name: odoo-addons
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
 spec:
   accessModes: ["ReadWriteOnce"]
   storageClassName: {{ odoo.storage_class }}
   resources:
     requests:
-      storage: {{ odoo.default_addons_storage }}
+      storage: {{ odoo.addons_storage }}

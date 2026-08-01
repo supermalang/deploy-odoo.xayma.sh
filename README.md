@@ -1,248 +1,725 @@
 Deploy-Odoo
 =========
 
-This role deploys and manages per-customer Odoo instances as Kubernetes
-workloads on the Xayma.sh Platform's single-node **k3s** cluster (the
-`install-platform.xayma.sh` repo — Traefik v3 + cert-manager + `kubernetes.core`).
-It is intended to run as an AWX job launched by the Xayma app, which passes
-identity vars and a fully-resolved set of flat `plan_*` vars as `extra_vars`.
-It can also be run from the CLI for manual/testing use (role defaults provide
-sane fallbacks for every `plan_*` var).
+This role deploys and manages a **shared multi-tenant pool** of Odoo
+instances as Kubernetes workloads on the Xayma.sh Platform's single-node
+**k3s** cluster (the `install-platform.xayma.sh` repo — Traefik v3 +
+cert-manager + `kubernetes.core`). It is intended to run as an AWX job
+launched by the Xayma app (via the `odoo-tenant` Workflow Job Template — see
+"AWX" below), which passes identity vars plus a resolved `plan`+`plan_spec`
+as `extra_vars`. It can also be run from the CLI for manual/testing use
+(role defaults provide sane fallbacks — see "Plan resolution").
 
 ```bash
 ansible-playbook site.yml -i production \
   -e odoo_action=deploy -e customer=supermalang -e instancename=laundromat \
-  -e custom_domain=laundromat.supermalang.com -e version=19 \
-  -e plan_workers=2 -e plan_db_maxconn=20 \
-  -e plan_mem_soft=629145600 -e plan_mem_hard=671088640 \
-  -e plan_odoo_mem_limit=1Gi -e plan_pg_mem_limit=512Mi \
+  -e custom_domain=laundromat.supermalang.com -e version=19 -e plan=standard \
   --vault-password-file vault_password -K
 ```
 
+This is a **ground-up rewrite** of the previous per-instance "slice" model
+(one Deployment + one dedicated Postgres StatefulSet per instance, one
+namespace per customer). See "Migrating from the slice model" near the end
+of this file for the full contract diff if you're updating a calling app
+that still speaks the old flat `plan_*` extra_vars.
+
 Architecture
 ------------
-- **One namespace per customer** (e.g. `supermalang`), holding every Odoo
-  instance for that customer.
-- **Each instance is a self-contained slice** inside that namespace: an Odoo
-  Deployment, its OWN dedicated Postgres StatefulSet (not the platform's
-  shared Postgres — full per-tenant isolation), a ConfigMap (`odoo.conf`) +
-  Secret (DB/admin passwords), filestore + addons PVCs, a Service, an
-  IngressRoute + cert-manager Certificate, and a set of NetworkPolicies.
-- Kubernetes object names are `{customer}-{instance}-odoo{version}` (e.g.
-  `supermalang-laundromat-odoo19`) — `customer`/`instancename` are slugified
-  to RFC-1123 (lowercase, `[a-z0-9-]`, ≤63 chars); un-sluggable input fails
-  fast with a clear error rather than a mid-deploy Kubernetes API rejection.
-- Every resource carries `app.kubernetes.io/part-of: xayma-platform`,
-  `app.kubernetes.io/managed-by: ansible`, `app.kubernetes.io/name`
-  (`odoo`/`postgres`/`restore`/`suspend-backend`), and
-  `xayma.sh/{customer,instance,odoo-version}` — teardown and NetworkPolicy
-  selectors are entirely label-driven.
-- A single **suspend-backend** (busybox httpd) is shared by every instance in
-  a customer namespace, serving `suspended.html`/`stopped.html`/`404.html`/
-  `50x.html`. Suspending/stopping an instance repoints its IngressRoute at
-  this backend (with a `replacePathRegex` Middleware forcing the right page,
-  no client-visible redirect); running instances also route their 404/50x
-  through it via a Traefik `errors` Middleware, for a styled fallback page.
-- **NetworkPolicies are written by this role**, not the platform's
-  `deploy-network-policies` (which only iterates its own fixed platform
-  namespace list and never sees a customer namespace): default-deny ingress,
-  edge → Odoo, `network-zone=observability` (pgAdmin) → Postgres, and
-  same-instance-only Odoo/restore → Postgres. The namespace itself still
-  carries `xayma.sh/network-zone: webservers` so the platform's existing
-  `databases ← webservers` rule (a live label selector) lets this
-  namespace's restore Job reach the platform MinIO.
+- **ONE namespace, `xayma-odoo`, for the whole tier.** No more per-customer
+  namespaces — every pool, every tenant, and every platform singleton
+  (Postgres, PgBouncer, Redis, suspend-backend, etc.) lives in this one
+  namespace.
+- **A tenant is not a workload.** A tenant is a Postgres database + a
+  filestore directory + one IngressRoute (+ a Certificate only when
+  `custom_domain` is set). Nothing else. Tenant identity (`customer`/
+  `instancename`) is still slugified to RFC-1123 exactly as before;
+  `instancename` stays globally unique (guaranteed by the Xayma app) and
+  doubles as the Postgres database name.
+- **Compute is organized in POOLS keyed by `(version, plan)`.**
+  `pool_id = odoo{version}-{plan}` (e.g. `odoo19-standard`). Several
+  versions may share a plan name and vice versa. Every tenant of the same
+  `(version, plan)` is served by the same pool — deploying a tenant onto an
+  already-existing pool never creates new compute, it just adds a database
+  + routing entry.
+- **Each pool = 3 Deployments + 1 ConfigMap + 1 PG role:**
+  - `{pool}-http` — prefork mode (`workers >= 2`), `max_cron_threads=0`,
+    `db_host=pgbouncer`, Service on `:8069`. The **only** autoscaled
+    Deployment (see "Autoscaling").
+  - `{pool}-cron` — exactly 1 replica, **never** scaled, `workers=0`, its
+    own `max_cron_threads`, `db_host=`the shared Postgres **directly**. No
+    Service — nothing routes traffic here.
+  - `{pool}-gevent` — 1 replica, Service on `:8072`, `db_host=`Postgres
+    directly (LISTEN/NOTIFY, which the websocket/long-polling worker
+    depends on, is incompatible with PgBouncer's transaction pooling). Runs
+    via `ODOO_GEVENT_PORT=8072`, the standard technique for splitting the
+    long-polling worker into its own pod.
+- **ONE shared Postgres** (StatefulSet `postgres:16.6-bookworm`, one PVC,
+  superuser Secret from a vault seed) for the entire tier. Every DB
+  reference is templated through `pg_target` (`vars/main.yml`), resolved
+  from `pg_topology` (`shared` | `per_version` | `per_pool`, default
+  `shared`) — **only `shared` is implemented today**; the other two names
+  are reserved so a future topology change never touches task logic, only
+  that one expression. `_assert-plan.yml` fails fast on anything else.
+- **PgBouncer** (transaction mode) in front of Postgres for `{pool}-http`
+  only. See "PgBouncer & per-tenant fairness" below — this is the one piece
+  of the architecture with real subtlety.
+- **Redis** (mandatory Odoo session backend, no filesystem fallback) via the
+  community `session_redis` addon (Camptocamp `odoo-cloud-platform`, 19.0
+  branch), loaded via `server_wide_modules` on every pool pod and
+  configured entirely through `ODOO_SESSION_REDIS_*` environment variables
+  (verified against the addon's actual source — see "Known caveats" for the
+  one real gap this leaves: the stock Odoo image doesn't ship the `redis`
+  Python package the addon needs).
+- **One shared suspend-backend** (busybox httpd) for the whole namespace,
+  serving `suspended.html`/`stopped.html`/`404.html`/`50x.html`. Three
+  Middlewares created once at bootstrap: `mw-suspended`
+  (`replacePathRegex` → `/suspended.html`), `mw-stopped` (→
+  `/stopped.html`), and `mw-errors` — realized as **two** k8s objects
+  (`mw-errors-404`, `mw-errors-50x`) since Traefik's `errors` middleware
+  takes one status range + one static page per object; every tenant's
+  IngressRoute attaches both.
+- **Per-tenant rate limiting** (not pool-level, not a bootstrap singleton):
+  each tenant gets its own `{tenant}-ratelimit` Middleware, sized from that
+  tenant's resolved `tenant_spec.ratelimit` — see "Plan resolution".
+- **TLS**: one **wildcard** Certificate (`*.{platform_domain}`) covers every
+  default host, issued via the DNS-01-capable ClusterIssuer
+  `letsencrypt-dns01-production` (`wildcard_cluster_issuer` in defaults) —
+  a wildcard cert can **only** be issued via ACME DNS-01, a hard protocol
+  limitation, which is why this is a separate issuer from the platform's
+  original HTTP-01-only `cluster_issuer`. A per-tenant Certificate (via
+  that original HTTP-01 issuer) is only created for `custom_domain`, gated
+  by a pre-flight DNS check (fails fast if the domain doesn't already
+  resolve to this platform).
+- **Storage**: one PVC `odoo-filestore` (every tenant under
+  `filestore/{instance_slug}/`) and one PVC `odoo-addons` (community/custom
+  addons incl. `session_redis`), mounted read-write/read-only respectively
+  by every pool pod and Job. `odoo_action=sync-addons` does a `git pull`
+  onto the addons PVC.
+- **Autoscaling**: an HPA on `{pool}-http` only (`minReplicas`/
+  `maxReplicas` from the plan spec, CPU target 65%, conservative behavior —
+  scale up at most 1 pod/60s, scale down only after a 300s stabilization
+  window), a PodDisruptionBudget (`minAvailable: 1`), preferred (not
+  required) pod anti-affinity spreading `{pool}-http` replicas across
+  nodes, and `startupProbe`/`readinessProbe`/`livenessProbe` on
+  `/web/health`. **Correct but inert on today's single node** — extra pods
+  just pend if there's no room. See "Before adding node 2".
+- **NetworkPolicies written once at bootstrap**, generic
+  component-label-driven selectors (`xayma.sh/pool-role`,
+  `xayma.sh/job-role`) so they never need a per-pool or per-tenant copy:
+  default-deny; edge → `{pool}-http`/`{pool}-gevent`; `{pool}-http` + Jobs →
+  PgBouncer; PgBouncer + `{pool}-cron`/`{pool}-gevent` + Jobs +
+  `xayma-tools` (observability, pgAdmin) → Postgres directly; pool pods →
+  Redis; edge → suspend-backend; edge → cert-manager's ACME HTTP-01 solver
+  pods.
+- **PriorityClass `batch-low`** (negative value, `preemptionPolicy: Never`)
+  on every Job this role creates. **Namespace ResourceQuota** as a
+  guardrail against Job pileups.
+- **Observability**: a `postgres-exporter` next to the shared Postgres
+  (`prometheus.io/scrape` annotation) plus Traefik's own router metrics —
+  see "Observability" below for the three alerts to configure externally.
 
-Stateless executor
--------------------
-This role ships **no `plans:` dict** and does not look anything up — the
-Xayma app is the source of truth for plans and launches the AWX job with a
-fully-resolved set of flat `plan_*` extra_vars (see the table below). Every
-`plan_*` var has a role default (`defaults/main/01-deploy-odoo-defaults.yml`)
-and is templated straight into the rendered manifests — no intermediate
-`plan` object, no JSON parsing.
+Every resource still carries `app.kubernetes.io/part-of: xayma-platform`,
+`app.kubernetes.io/managed-by: ansible`, `app.kubernetes.io/name`
+(`odoo`/`postgres`/`pgbouncer`/`redis`/`postgres-exporter`/`suspend-backend`),
+and `xayma.sh/*` labels — but the taxonomy is now split into **pool** labels
+(`xayma.sh/pool-id`, `xayma.sh/odoo-version`, `xayma.sh/plan`,
+`xayma.sh/pool-role`: `http`|`cron`|`gevent`) and **tenant** labels
+(`xayma.sh/customer`, `xayma.sh/instance`, and — on the tenant's IngressRoute
+only — `xayma.sh/state`: `running`|`suspended`|`stopped`, which doubles as
+the durable record every lifecycle action reads back instead of taking
+`version`/`plan`/state as input again; see `tasks/_recover-tenant.yml`).
+Job pods additionally carry `xayma.sh/job-role`
+(`init`|`fixup`|`restore`|`backup`|`sync-addons`|`fileops`).
 
-There are also no per-instance password fields anywhere in the input
-contract: the DB password and Odoo master password are derived
-deterministically per instance from a per-role vault seed
-(`vault_odoo_db_password`/`vault_odoo_admin_password`) plus the
-customer/instance slugs (`vars/main.yml`) — idempotent, nothing generated or
-persisted.
+Stateless executor, but not stateless about sizing
+----------------------------------------------------
+This role is still a **stateless executor for tenant identity**: every
+secret is derived deterministically from a handful of vault "seeds"
+(`vars/main.yml`) rather than persisted per-tenant/per-pool — see "Vault".
+
+It is **no longer** stateless about sizing. The old slice-model doctrine
+("no `plans:` dict in the role, the app sends fully-resolved flat `plan_*`
+vars") existed because the role's Job Template was driven by a flat AWX
+survey. Now that the app calls AWX's REST API directly with real JSON
+`extra_vars`, there's no reason to keep sizing flat — see "Plan resolution".
+
+Plan resolution
+----------------
+Plans are identified by **name** (a slug — it lands in `pool_id` and PG
+role names, so it's RFC-1123-asserted). The **Xayma app is the source of
+truth**: every real launch sends `plan` (the name) **and** `plan_spec` (the
+full nested spec, schema below) as `extra_vars`. This role keeps a small
+**fallback catalog** (`defaults/main/00-plans.yml`, same schema, two
+example entries — `standard`/`premium`) consulted only when `plan_spec` is
+absent (manual CLI/AWX-survey runs that only set `plan`); an unrecognized
+`plan` name with no `plan_spec` either falls through to
+`plan_spec_hard_fallback` (`defaults/main/01-deploy-odoo-defaults.yml`), a
+deliberately conservative safety net, never a real tier.
+
+Precedence, resolved fresh on every call by `tasks/_resolve-plan-spec.yml`:
+
+```
+plan_spec (app-supplied extra_var, or plan_spec_json for manual/survey runs)
+  > plans[plan]   (defaults/main/00-plans.yml catalog)
+  > plan_spec_hard_fallback
+```
+
+### `plan_spec` schema
+
+| Key | Scope | Meaning |
+|-----|-------|---------|
+| `workers` | pool | `{pool}-http`'s Odoo `workers` (must be `>=2` — prefork mode) |
+| `replicas_min` / `replicas_max` | pool | HPA bounds for `{pool}-http` |
+| `pod.cpu_request` / `pod.cpu_limit` / `pod.mem_request` / `pod.mem_limit` | pool | Applied identically to all 3 Deployments in the pool |
+| `limits.mem_soft` / `limits.mem_hard` | pool | odoo.conf `limit_memory_soft`/`hard` (bytes) — **kept below `pod.mem_limit`** so Odoo self-recycles a worker before Kubernetes OOMKills the pod (asserted, not just commented) |
+| `limits.time_cpu` / `limits.time_real` / `limits.request` | pool | odoo.conf `limit_time_cpu`/`limit_time_real`/`limit_request` |
+| `cron.threads` | pool | `{pool}-cron`'s `max_cron_threads` |
+| `db_maxconn` | pool | odoo.conf `db_maxconn` — **worker-side demand**, not the fairness lever (see below) |
+| `init_modules` | tenant | Comma-separated (no spaces) `-i` module list for this tenant's one-shot init Job |
+| `tenant_db_max_connections` | tenant | PgBouncer's per-tenant-database cap — **the real per-tenant throttle** |
+| `ratelimit.avg` / `ratelimit.burst` | tenant | This tenant's own `{tenant}-ratelimit` Traefik Middleware |
+
+**POOL-scoped keys are CREATE-ONLY.** They are applied only the first time
+a given `(version, plan)` pool is actually created. The pool's `{pool}-http`
+Deployment carries an annotation, `xayma.sh/plan-spec-hash`, recording a
+deterministic hash of the pool-scoped spec it was built with. On every
+later `deploy`/`change-plan` call touching that same pool, if the freshly-
+resolved pool-scoped spec's hash differs from that annotation, the incoming
+values are **silently ignored** for sizing purposes (a prominent warning is
+logged) — a mismatched `plan_spec` sent by an ordinary tenant operation
+**never** resizes/rolls a pool out from under every other tenant on it.
+
+**TENANT-scoped keys are always honored** — every `deploy`/`change-plan`
+call re-applies them for that one tenant (its PgBouncer cap, its ratelimit
+Middleware, and — for `deploy` only — its init module list).
+
+### `db_maxconn` vs `tenant_db_max_connections` — don't confuse these
+
+`db_maxconn` (pool-scoped, odoo.conf) is how many PG connections **one
+Odoo worker process** may open — it's worker-side demand, sized for
+throughput. `tenant_db_max_connections` (tenant-scoped, PgBouncer) is how
+many connections **one tenant's database** may ever hold through PgBouncer
+at once — it's the actual per-tenant fairness lever, protecting every other
+tenant on the same pool from one noisy neighbor. **Raising `db_maxconn`
+does not fix a starved tenant** — if a tenant is queueing at PgBouncer,
+that's PgBouncer enforcing `tenant_db_max_connections` **by design**; the
+right lever is `odoo_action=change-plan` onto a plan with a higher
+`tenant_db_max_connections`, not touching `db_maxconn`.
+
+### Resizing an existing pool: `odoo_action=apply-plan`
+
+To actually change a pool's frozen sizing (workers/replicas/pod resources/
+memory limits/cron threads/`db_maxconn`) for **every** tenant currently on
+it, use `odoo_action=apply-plan` (`version`+`plan`+`plan_spec` — no tenant
+identity in this action's input at all). It bypasses the create-only guard
+and rolls the pool's Deployments/ConfigMap/HPA to the new spec, updating
+the hash annotation and logging a prominent warning. **This affects every
+tenant currently served by that pool** — there is no partial/per-tenant
+apply.
+
+### Individual overrides for manual/testing runs
+
+The only manual-run fallback is `plan_spec_json` (a JSON string, parsed
+into `plan_spec` by `tasks/_resolve-plan-spec.yml`) — the flat `plan_*`
+extra_vars from the old model are gone entirely (see "Migrating from the
+slice model").
 
 Input contract
 ---------------
 Identity vars (also survey-able for manual runs):
 
-| Var            | Description |
-|----------------|-------------|
-| `customer`     | Customer slug/name (slugified to the namespace name) |
-| `instancename` | Instance name (slugified into the k8s object name) |
+| Var | Description |
+|-----|-------------|
+| `customer` | Customer slug/name (label only now — no longer a namespace name) |
+| `instancename` | Instance name — slugified into the tenant's k8s object names and its Postgres database name; globally unique (guaranteed by the Xayma app) |
 | `custom_domain` | Optional extra domain, in addition to the always-attached default host `<instance_slug>.<platform_domain>` (blank = default host only; deduped if it equals the default) |
-| `version`      | Odoo major version, e.g. `"19"` → image `odoo:19.0` |
+| `version` | Odoo major version, e.g. `"19"` → pool image `{odoo_image_repo}:19.0`. Required for `deploy`/`change-plan` only — every other action recovers it from live state |
+| `plan` | Plan **name** — required for `deploy`/`change-plan`/`apply-plan`. See "Plan resolution" |
+| `plan_spec` | Optional nested dict, same schema as "Plan resolution" above. Omit to use the catalog/hard-fallback |
+| `plan_spec_json` | Optional JSON-string form of `plan_spec`, for AWX surveys/manual runs that can't send a real nested value |
 
-`plan_*` vars (consumed by `odoo_action=deploy`/`restart`; every
-one has a role default, so none are strictly required — the Xayma app
-overrides them per-instance):
-
-| Var | Default | Description |
-|-----|---------|-------------|
-| `plan_workers` | `0` | Odoo `workers` (0 = threaded; >0 wires the 8072 long-polling port) |
-| `plan_db_maxconn` | `32` | `db_maxconn` in odoo.conf |
-| `plan_mem_soft` | `536870912` | `limit_memory_soft` (bytes) |
-| `plan_mem_hard` | `1073741824` | `limit_memory_hard` (bytes) |
-| `plan_max_cron_threads` | `1` | `max_cron_threads` in odoo.conf |
-| `plan_odoo_cpu_request` | `250m` | Odoo container CPU request |
-| `plan_odoo_mem_request` | `512Mi` | Odoo container memory request |
-| `plan_odoo_cpu_limit` | `1` | Odoo container CPU limit |
-| `plan_odoo_mem_limit` | `1Gi` | Odoo container memory limit |
-| `plan_pg_cpu_request` | `100m` | Postgres container CPU request |
-| `plan_pg_mem_request` | `256Mi` | Postgres container memory request |
-| `plan_pg_cpu_limit` | `500m` | Postgres container CPU limit |
-| `plan_pg_mem_limit` | `512Mi` | Postgres container memory limit |
-| `plan_filestore_storage` | `1Gi` | Filestore PVC size |
-| `plan_pg_storage` | `1Gi` | Postgres PVC size |
-| `plan_init_modules` | `"base"` | Comma-separated (no spaces) module list for the first-deploy `-i` init, e.g. `"base,my_module"`; custom modules must exist in the addons path |
-
-`odoo_action=restore` additionally requires `snapshot_id` (the timestamp prefix
-of the snapshot to restore) and accepts optional `snapshot_kind`
+`odoo_action=restore`/`backup` additionally accept `snapshot_id` (restore
+only, required — the timestamp prefix of the snapshot) and `snapshot_kind`
 (`daily`|`adhoc`, default `daily`).
+
+`odoo_action=sync-addons` requires `addons_repo_url` and accepts
+`addons_repo_ref` (default `main`) — this action takes **no** tenant
+identity at all.
 
 Actions
 -------
 Dispatch is driven by a single `odoo_action` extra-var (not `--tags` — AWX
-surveys set `extra_vars`, so a single Job Template + survey can drive every
-action below). The role fails fast with a clear message if `odoo_action` is
+surveys set `extra_vars`, so a single WFJT + survey can drive every action
+below). The role fails fast with a clear message if `odoo_action` is
 missing or not one of these values.
 
-This role is **strictly instance-scoped**: every action operates on exactly
-one instance, never more. Customer-level operations (e.g. suspending every
-instance for a customer that hasn't paid) are orchestrated by the Xayma app,
-which loops this same instance-scoped Job Template over every active
-instance belonging to that customer — the role itself carries no
-multi-instance action and never will.
+This role is **strictly tenant-scoped** for every action except
+`apply-plan` (pool-scoped) and `sync-addons` (namespace-scoped): every other
+action operates on exactly one tenant, never more. Customer-level
+operations (e.g. suspending every tenant for a customer that hasn't paid)
+are orchestrated by the Xayma app, which loops the tenant-scoped WFJT over
+every active tenant belonging to that customer.
 
-| `odoo_action` | Description |
-|-----|-------------|
-| `deploy` | Create/update an instance (namespace, Postgres, Odoo, ingress, network policies) |
-| `start` | Scale up, repoint the IngressRoute at Odoo |
-| `stop` | Scale down, repoint the IngressRoute at the stopped page |
-| `suspend` | Scale down, repoint the IngressRoute at the suspended page |
-| `restart` | Reapply config/Deployment/StatefulSet, then force pod recreation |
-| `edit-domain` | Change the custom domain (the default host is untouched), preserving the current running/suspended/stopped state |
-| `delete` | Delete every resource labelled for this instance; if it was the last instance in the customer namespace, also delete the namespace (and with it the shared suspend-backend/MinIO Secret) |
-| `restore` | Restore a snapshot (`snapshot_id`, optional `snapshot_kind`) |
+| `odoo_action` | Scope | Description |
+|-----|-------|-------------|
+| `deploy` | tenant | Create/update a tenant: bootstrap the platform + pool if needed, create the DB (idempotent — never re-inits), run init/fixup Jobs, render routing |
+| `start` | tenant | GRANT the tenant's DB access back, repoint its IngressRoute at its pool |
+| `stop` | tenant | REVOKE DB access, terminate backends, purge Redis sessions, repoint at the stopped page |
+| `suspend` | tenant | Identical mechanics to `stop`, different page/state |
+| `restart` | tenant | **REDEFINED** — see "Known caveats": terminates DB backends + purges Redis sessions; there is no per-tenant process to restart |
+| `edit-domain` | tenant | Change the custom domain (default host untouched), preserving current state |
+| `change-plan` | tenant | Move a tenant to a different plan, **same Odoo version only** (asserted). No data movement |
+| `apply-plan` | **pool** | Reconcile an existing pool's frozen sizing to a new `plan_spec` — see "Plan resolution". Affects every tenant on that pool |
+| `change-version` | tenant | **Stub — fails fast.** Out of scope, see "Non-goals" |
+| `delete` | tenant | Final adhoc backup, drop the DB, remove filestore dir + PgBouncer entry, delete every labelled object; scales the pool to 0 if it was the last tenant (never deletes pool objects) |
+| `restore` | tenant | Restore a snapshot (`snapshot_id`, optional `snapshot_kind`) — fences via REVOKE/terminate, no scaling steps |
+| `backup` | tenant | Single-tenant `pg_dump` + filestore tar → MinIO |
+| `sync-addons` | **namespace** | `git pull` onto the shared addons PVC — no tenant identity |
 
-CLI examples:
+PgBouncer & per-tenant fairness
+--------------------------------
+`{pool}-http` talks to PgBouncer (transaction pooling); `{pool}-cron`,
+`{pool}-gevent`, and every Job talk to Postgres **directly**. PgBouncer
+authenticates client connections dynamically via `auth_query` against a
+`SECURITY DEFINER` wrapper function over `pg_shadow` (no static userlist
+edits when pool roles are created/rotated) — its own outbound connection to
+Postgres (to run that query) uses a plaintext credential in a k8s Secret,
+same trust model as every other secret in this role.
 
-```bash
-# Instance-scope action, no plan needed
-ansible-playbook site.yml -i production \
-  -e odoo_action=start -e customer=supermalang -e instancename=laundromat \
-  --vault-password-file vault_password -K
+PgBouncer's `[databases]` section has no native way to vary a per-database
+cap by which pool a *dynamically-named* database belongs to under one
+wildcard `*` entry, so each tenant's `tenant_db_max_connections` is
+materialized as its **own explicit `[databases]` line** in a separate
+`%include`d ConfigMap, fully regenerated from every live tenant's
+IngressRoute annotation on every `deploy`/`change-plan`/`delete`
+(`tasks/_sync-pgbouncer-tenants.yml`) — a full desired-state replace, never
+an incremental patch, so concurrent tenant operations can never race or
+corrupt each other's entry. PgBouncer is reloaded via `SIGHUP` afterwards
+(equivalent to its admin console's `RELOAD`, no dropped connections) —
+**note**: the ConfigMap volume mount isn't `subPath`'d, so kubelet's normal
+~60s sync delay applies before a brand-new cap is actually live; see "Known
+caveats".
 
-# Instance-scope action that consumes the plan_* vars
-ansible-playbook site.yml -i production \
-  -e odoo_action=deploy -e customer=supermalang -e instancename=laundromat \
-  -e custom_domain=laundromat.supermalang.com -e version=19 \
-  -e plan_workers=2 -e plan_db_maxconn=20 \
-  --vault-password-file vault_password -K
-```
+PostgreSQL access model
+-------------------------
+Ansible connects **directly** to the shared Postgres via `community.postgresql`
+(not `kubectl exec`) — see "Requirements" for why this is expected to work
+in this platform's topology, and `vars/main.yml`/`tasks/_pg-connection.yml`
+for how the connection host is resolved (the shared Postgres Service is a
+real `ClusterIP`, not headless, specifically so this works without relying
+on in-cluster DNS from the control node).
 
-### AWX
+- **One LOGIN role per pool**: `pool_{version}_{plan}`, password derived
+  from the same vault-seed pattern as every other secret, keyed on
+  `pool_id`.
+- **Once, for the whole tier**: `pgadmin_ro`/`backup_ro` (`LOGIN`,
+  `pg_read_all_data`) and `pgbouncer_auth`/`pg_exporter` (least-privilege,
+  see "Architecture").
+- **Per tenant database**: `OWNER` = its pool role; `REVOKE CONNECT FROM
+  PUBLIC`; `GRANT CONNECT` to the pool role + `pgadmin_ro` + `backup_ro`.
+  The admin/backup grants **survive suspension** — only the pool role's
+  grant is toggled by `suspend`/`stop`/`start`.
 
-Run this role from **one instance-scoped** AWX Job Template — there is no
-customer-scope Job Template; the Xayma app loops this one over a customer's
-active instances when it needs to act on all of them.
+Autoscaling — before adding node 2
+------------------------------------
+The HPA/PDB/anti-affinity above are **correct but inert** on today's
+single-node cluster — a pod that can't be scheduled just pends. Before
+adding a second node, work through this checklist:
 
-- Job Template → **Variables**: leave empty, set to *Prompt on launch*. This
-  lets the Xayma app pass `odoo_action`, the identity vars, and — for
-  `deploy`/`restart` — the flat `plan_*` vars, all as
-  `extra_vars` via the AWX API on every launch.
-- Add a **survey** for manual/testing runs from the AWX UI, with fields
-  (defaults match §1/`defaults/main/01-deploy-odoo-defaults.yml`, so every
-  field can be left at its default for a quick manual run):
-  - `odoo_action` — Multiple Choice, **required**, Answer Variable Name
-    `odoo_action`, one of the 8 values in the table above
-  - `instancename` — Text, **required**
-  - `customer` — Text, **required**
-  - `version` — required, default e.g. `"19"`
-  - `custom_domain` — Text, optional, no default. Every instance always gets
-    the default host `<instancename>.<platform_domain>`; `custom_domain` adds
-    one more host to both the Certificate and the IngressRoute (deduped if it
-    equals the default). NOTE for the app: it now sends `custom_domain`
-    (optional) instead of the old `domain` var.
-  - Integer fields, Answer Variable Name matches the var name: `plan_workers`,
-    `plan_db_maxconn`, `plan_mem_soft`, `plan_mem_hard`, `plan_max_cron_threads`
-  - Text fields: `plan_odoo_cpu_request`, `plan_odoo_mem_request`,
-    `plan_odoo_cpu_limit`, `plan_odoo_mem_limit`, `plan_pg_cpu_request`,
-    `plan_pg_mem_request`, `plan_pg_cpu_limit`, `plan_pg_mem_limit`,
-    `plan_filestore_storage`, `plan_pg_storage`,
-    `plan_init_modules` (default `"base"`; comma-separated, no spaces —
-    custom modules must exist in the addons path)
-  - `snapshot_id` / `snapshot_kind` — for `restore`
+- [ ] `odoo-filestore`/`odoo-addons` must become RWX across nodes (an NFS
+      export or an RWX-capable provisioner) — `local-path`'s PVCs are tied
+      to one node. `attachment_s3` for the filestore is a **future**
+      optimization, not implemented here (see "Non-goals").
+- [ ] Confirm Redis sessions are actually active for every tenant (see
+      "Known caveats" on `session_redis`'s real dependency gap) — a node-2
+      pod that can't reach sessions will force every user on it to log in
+      again.
+- [ ] Confirm the HPA actually schedules `{pool}-http` replicas onto the
+      new node (not just that it *wants* to) once the storage above is RWX.
+- [ ] `postgres.node_selector` currently pins the shared Postgres
+      deliberately (its PVC is `local-path`) — decide (and document) which
+      node it stays on before adding a second one.
 
-  The Xayma app sends these same flat `plan_*` keys as `extra_vars` on every
-  API launch — no nested `plan` object or JSON parsing on either side.
+Observability
+--------------
+`postgres-exporter` runs next to the shared Postgres
+(`prometheus.io/scrape: "true"` on its Service); Traefik's own router
+metrics are exposed by the platform already. Configure at least these
+three alerts externally (dashboards are out of scope here):
+
+1. **Pool worker occupation / CPU p95** per pool — the earliest signal that
+   a pool needs `apply-plan` (more `workers`/replicas) before tenants on it
+   feel it.
+2. **Postgres disk usage** — one shared disk now serves every tenant.
+3. **Per-database size growth** (`pg_database_size` per tenant db) — the
+   earliest signal of one tenant needing a `change-plan` or a data cleanup
+   conversation, now that noisy-neighbor DB growth is everyone's problem.
+
+AWX
+---
+The calling app knows exactly **one** launch target: the Workflow Job
+Template `odoo-tenant` (`allow_simultaneous: true` — it only routes).
+Running `ansible-playbook awx-setup.yml` reconciles this WFJT plus the
+Job Templates below plus their shared survey — nothing else is needed to
+make the extra templates appear; see "Migrating from the slice model" for
+the prerequisites that setup itself relies on (Project/Inventory/credentials).
+
+- AWX Workflow nodes can only branch on a node's **success/failure**, never
+  on an extra_var's value, so the "router" is implemented imperatively: the
+  WFJT has one node pointing at `odoo-router` (playbook `awx-router.yml`),
+  which calls the AWX API to launch whichever internal Job Template owns
+  the received `odoo_action`, waits for it, and surfaces its status back to
+  the WFJT.
+- `odoo-lifecycle-internal` (`allow_simultaneous: false`) — `start`/`stop`/
+  `suspend`/`restart`/`edit-domain`/`change-plan`/`apply-plan` (fast).
+- `odoo-provision-internal` (`allow_simultaneous: false`) — `deploy`/
+  `delete`/`restore`/`backup` (slow).
+- Cross-queue safety = per-tenant Job-name mutexes (`init-{slug}`, etc.) +
+  the state asserts already in the playbook — `odoo-router` itself is
+  `allow_simultaneous: true` since it does no cluster work.
+- `sync-addons` is routed by `odoo-router` too, to whichever internal
+  template — it has no tenant identity either way.
+
+Run `ansible-playbook awx-setup.yml` (with `CONTROLLER_HOST`+
+`CONTROLLER_OAUTH_TOKEN` or `CONTROLLER_USERNAME`/`CONTROLLER_PASSWORD` set)
+to create/update the WFJT + 3 Job Templates + their shared survey
+(`roles/configure-awx`) — it does **not** create the AWX Project,
+Inventory, or machine/vault credentials it references by name; those are
+one-time manual setup (see "Migrating from the slice model"). `odoo-router`
+additionally needs an AWX API token credential attached (injects
+`CONTROLLER_HOST`/`CONTROLLER_OAUTH_TOKEN` for its own `awx.awx.job_launch`
+call at runtime).
+
+The survey (same fields on all 3 Job Templates + the WFJT) matches the
+"Input contract" table above, plus `plan_spec_json` as the manual-run
+fallback for `plan_spec`.
+
+### Scheduled operations
+
+AWX `Schedule` objects bind to **one** Job Template with **fixed**
+`extra_vars` — they cannot loop over tenants. Nightly backups therefore
+stay **app-driven**: the Xayma app's own scheduler calls the WFJT once per
+active tenant on its nightly trigger (consistent with how customer-scope
+operations already work in this role — the app loops, the role never
+does). Retention and a periodic restore-test are the app's/ops'
+responsibility against the MinIO `snapshots` bucket layout below — this
+role provides the mechanism (`backup`/`restore`), not the policy.
 
 Backups & Restore
------------------
-This role owns no backup policy or schedule. Backups are orchestrated
-externally by **n8n**, driven by the app's live plan/payment status, and
-land in the platform MinIO's `snapshots` bucket, pathed
-`snapshots/{customer}/{instance}/{daily|adhoc}/{timestamp}/` (same layout
-whether n8n calls a snapshot "daily" or "adhoc").
-
-`odoo_action=restore` is the one snapshot-related action this role still
-provides — a deliberate ops action, not dynamic policy. Given `snapshot_id`
-(the timestamp prefix of a snapshot already sitting in that MinIO path) and
-optional `snapshot_kind` (`daily`|`adhoc`, default `daily`), it scales Odoo
-to 0, runs a Job that pulls the dump + filestore tar via `rclone`, drops and
-recreates the instance database from the dump, replaces the filestore, then
-scales Odoo back up.
+-------------------
+Snapshots land in the platform MinIO's `snapshots` bucket, pathed
+`snapshots/{customer}/{instance}/{daily|adhoc}/{timestamp}/`. `backup`
+(`pg_dump` + filestore tar) and `restore` (the inverse, fenced by
+REVOKE/GRANT around the pool role rather than the old "scale Odoo to 0" —
+there is no per-tenant process to scale in the pool model) are both
+deliberate ops actions in this role, not dynamic policy — see "Scheduled
+operations" for how iteration across tenants actually happens.
 
 Versions
 --------
 Pinned in `defaults/main/01-deploy-odoo-defaults.yml` (`versions:` dict) —
-Odoo `"19"` (`odoo:19.0`, survey fallback only; real deploys pass `version`
-explicitly), Postgres `16.6-bookworm` (dedicated per instance), `busybox`
-(suspend-backend + config-merge initContainer), `rclone` (restore Job).
-Never `latest`.
+Odoo `"19"` (survey fallback only; real deploys pass `version` explicitly;
+image is `{odoo_image_repo}:{version}.0` — see "Requirements" for why
+`odoo_image_repo` is NOT just `odoo` in practice), Postgres
+`16.6-bookworm` (ONE shared StatefulSet), PgBouncer `1.23.1-p2`
+(`edoburu/pgbouncer`), Redis `7.4.1-alpine3.20`, postgres-exporter
+`v0.16.0`, `busybox` (suspend-backend + every initContainer config merge),
+`rclone` (restore/backup Jobs), `git` (sync-addons Job). Never `latest`.
 
 Vault
 -----
-`defaults/main/02-credentials.yml` (encrypted) holds:
-`vault_odoo_db_password`, `vault_odoo_admin_password` (per-instance secret
-derivation seeds — see `vars/main.yml`), `vault_odoo_minio_access_key`,
-`vault_odoo_minio_secret_key` (platform MinIO access for `odoo_action=restore`).
-See `defaults/main/02-credentials.yml.example` to (re)create it.
+`defaults/main/02-credentials.yml` (encrypted) holds three seeds:
+`vault_odoo_db_password` (per-**pool** role passwords, keyed on `pool_id`),
+`vault_odoo_admin_password` (per-**tenant** admin password, keyed on
+customer/instance slugs), and `vault_odoo_platform_password` (derives every
+fixed-platform-role credential this role creates once for the whole tier:
+the Postgres superuser, `pgadmin_ro`/`backup_ro`, PgBouncer's `auth_query`
+role, `pg_exporter`, and Redis's `requirepass` — each
+`hash('sha256', seed ~ '|' ~ role_name)`), plus
+`vault_odoo_minio_access_key`/`vault_odoo_minio_secret_key` (platform MinIO
+access for `backup`/`restore`). See
+`defaults/main/02-credentials.yml.example` to (re)create it.
 
 Known caveats
 -------------
-- Re-running `odoo_action=deploy` against an already-suspended/stopped instance
-  resets it to `running` (the Odoo/Postgres replica count is templated as
-  part of the initial-deploy manifests) — use `odoo_action=deploy` for
-  create/resize while an instance is running; use the dedicated
-  `start`/`stop`/`suspend` actions for state changes.
-- A fresh `odoo_action=deploy` now auto-initializes the database on first
-  boot: the Odoo container's entrypoint waits for Postgres, checks whether
-  `{{ instance_slug }}`'s database already exists, and if not runs
-  `odoo -i {{ plan_init_modules }} --stop-after-init` (default `base`) then
-  sets the `base.user_admin` password to the instance's `ADMIN_PASSWD`
-  secret before serving. This guard only fires when the database is absent,
-  so re-deploys/restarts never re-init an existing DB. `list_db = False` +
-  `dbfilter` in `odoo.conf.j2` still keep the `/web/database/manager`
-  selector disabled — login is `admin` / `<ADMIN_PASSWD>`, the per-instance
-  derived secret value, read with:
-  `kubectl get secret <instance_name> -n <customer> -o jsonpath='{.data.ADMIN_PASSWD}' | base64 -d`.
-  Restoring an existing snapshot (`odoo_action=restore`) is unaffected — the
-  DB already exists by the time the guard checks.
+- **`restart` semantics changed.** There is no per-tenant Odoo process
+  anymore — `odoo_action=restart` now terminates that tenant's live DB
+  backends and purges its Redis sessions (forcing a fresh login), and
+  touches nothing else. It does **not** restart any pod, and it does
+  **not** affect any other tenant sharing the same pool.
+- **Registry/import warm-up on first request per pod.** A freshly-scaled
+  (or freshly-restarted) `{pool}-http` pod pays Odoo's normal module-
+  registry load cost on its first request after starting — with many
+  tenants sharing one pool, this is a bigger one-time cost than the old
+  per-instance model's, though it only happens on pod start, not per-tenant.
+- **PgBouncer log noise on suspend/stop.** Terminating backends while a
+  tenant is mid-request produces normal-but-noisy PgBouncer/Postgres
+  disconnect log lines — harmless, but don't alert on it.
+- **PgBouncer tenant-cap propagation lag.** The tenants ConfigMap isn't
+  `subPath`-mounted, so kubelet's normal ~60s sync window applies between
+  `_sync-pgbouncer-tenants.yml` writing a new cap and the mounted file
+  (and therefore the post-`SIGHUP` reload) actually reflecting it.
+- **`session_redis` — verified, but with one real gap left.** Configuration
+  (host/port/password/SSL/prefix) was verified against
+  `camptocamp/odoo-cloud-platform`'s actual source on its `19.0` branch: it
+  is entirely `ODOO_SESSION_REDIS_*` environment variables (NOT odoo.conf
+  keys), set per pool in `pool-deployments.yaml.j2`, with
+  `ODOO_SESSION_REDIS_SSL=0` (this platform's Redis doesn't terminate TLS,
+  but the addon defaults to SSL **on**) and `ODOO_SESSION_REDIS_PREFIX`
+  set to the pool id. The Redis key itself carries no per-tenant/per-
+  database segment at all (only the stored session *value*'s `db` field
+  does), which is why suspend/stop/restart's session purge
+  (`tasks/_purge-tenant-redis-sessions.yml`) runs a small Lua script
+  server-side (SCAN+GET+filter-by-`db`+DEL) instead of a key-pattern scan.
+  The stock Docker Hub `odoo` image does not include the `redis` Python
+  package the addon imports — without it, a tenant's first session access
+  on any pool pod throws, not at pod startup. See "Custom Odoo image"
+  below for how that gets built automatically (opt-in).
+- **Single-node SLA statement.** This platform is one k3s node. The HPA/
+  PDB/anti-affinity exist and are correct, but they cannot provide any
+  actual redundancy until a second node exists — see "Before adding node 2".
+- **`apply-plan` blast radius.** It resizes/rolls **every** tenant on the
+  targeted pool in one call, by design (see "Plan resolution") — there is
+  deliberately no partial/per-tenant apply.
+- **Wildcard Certificate needs a DNS-01 ClusterIssuer.** `wildcard_cluster_issuer`
+  defaults to `letsencrypt-dns01-production` (added to
+  `install-platform.xayma.sh` for exactly this). If it is ever repointed at
+  an HTTP-01-only issuer (e.g. `cluster_issuer`), the Certificate k8s
+  object applies fine but cert-manager will never actually issue it — this
+  is an ACME protocol limitation, not a config choice.
+- **`db_maxconn` vs `tenant_db_max_connections`** — see "Plan resolution".
+  These are two different levers; confusing them under load is the most
+  likely on-call mistake in this architecture.
+
+Non-goals
+---------
+Stated here, deliberately not implemented: email/SMTP (outbound and
+inbound); a dedicated-slice tier; `change-version` migration (stub only —
+see the Actions table); `attachment_s3` for the filestore (documented as a
+future optimization in "Before adding node 2"); per-tenant branded suspend
+pages; multi-node storage work beyond the "Before adding node 2" checklist;
+per-tenant AWX Schedules for backup iteration (see "Scheduled operations"
+— deliberately app-driven instead). Automatic image build/push
+(`odoo_image_build`, see "Custom Odoo image") is implemented but OFF by
+default and requires `nerdctl-full` on the execution host — this repo
+does not install that itself.
+
+Custom Odoo image
+--------------------
+`session_redis` (mandatory - see "Architecture") needs the `redis` Python
+package, which the stock `odoo` image doesn't ship. `tasks/_ensure-odoo-image.yml`
+(called from `_resolve-pool.yml` on every `deploy`/`change-plan`/
+`apply-plan`) handles this:
+
+1. Checks whether `{{ odoo_image_repo }}:{{ version }}.0` already exists in
+   the registry, via Docker Hub's REST API directly (not a local image
+   cache — that can't tell you whether a tag was ever actually *pushed*).
+   Works anonymously for public repos; authenticates with
+   `vault_odoo_dockerhub_username`/`vault_odoo_dockerhub_token` (a Docker
+   Hub **access token**, not your account password) when set, for private
+   repos.
+2. If it's missing and `odoo_image_build.enabled` is `true` (default
+   `false`): builds it from `files/odoo-image/Dockerfile` (`FROM
+   odoo:{version}.0` + `pip install redis`) and pushes it, via `nerdctl`
+   against **k3s's own embedded containerd** (`k3s_containerd_socket`) —
+   deliberately not a separate Docker daemon, since k3s already ships a
+   container runtime and `nerdctl` is Docker-CLI-compatible against it
+   directly. This needs the **`nerdctl-full`** release specifically
+   (https://github.com/containerd/nerdctl/releases) — the bare `nerdctl`
+   binary doesn't bundle `buildkitd`, which `nerdctl build` requires.
+3. If it's missing and `odoo_image_build.enabled` is `false`: fails fast
+   with a clear message, rather than letting every pod in a brand-new pool
+   crash-loop on a missing image.
+
+To activate it: install `nerdctl-full` on the k3s node (the execution
+host), set `odoo_image_build.enabled: true`, point `odoo_image_repo` at
+your registry namespace (e.g. `yourdockerhubuser/xayma-odoo`), and add
+`vault_odoo_dockerhub_username`/`vault_odoo_dockerhub_token` to the vault.
+The Dockerfile itself was written without access to a container runtime
+to build-test it — verify the first real build actually starts a working
+container before relying on it in production.
+
+If you'd rather not give this role container-build access at all, push
+the tag yourself from wherever you already build images (`docker build
+--build-arg ODOO_VERSION={version} -t {odoo_image_repo}:{version}.0
+files/odoo-image/ && docker push ...` — or the `nerdctl` equivalent) and
+leave `odoo_image_build.enabled` at `false` — the existence check still
+runs, it just never needs to build anything once the tag is there.
 
 Requirements
 ------------
 - The Xayma.sh Platform (k3s + Traefik + cert-manager + a platform MinIO)
   already deployed — see `install-platform.xayma.sh`.
-- `kubernetes.core` and `community.general` Galaxy collections (see
-  `requirements.yml`).
+- `kubernetes.core`, `community.general`, `community.postgresql`, and
+  `awx.awx` (only needed for `awx-setup.yml`) Galaxy collections (see
+  `requirements.yml`) — plus **`psycopg2` (or `psycopg`) installed on the
+  Ansible control node/AWX execution environment**, required by
+  `community.postgresql`.
+- **Only if `odoo_image_build.enabled: true`** (see "Custom Odoo image" —
+  off by default): the **`nerdctl-full`** release
+  (https://github.com/containerd/nerdctl/releases — the full bundle, not
+  the bare binary, so `buildkitd` is included) on whatever host runs this
+  playbook. No extra Galaxy collection needed for this one — it shells out
+  to `nerdctl` against k3s's own embedded containerd.
+- **This role assumes the Ansible control node/AWX execution environment is
+  co-located with the k3s node** (consistent with `kubeconfig_path`
+  defaulting to a local file path, `/etc/rancher/k3s/k3s.yaml`) and can
+  reach the cluster's Service CIDR directly by IP — `community.postgresql`
+  connects to the shared Postgres's `ClusterIP` (see
+  `tasks/_pg-connection.yml`), which is not a routable address from outside
+  the cluster's own network. If that assumption doesn't hold in your
+  deployment, this needs revisiting (e.g. exposing Postgres via a
+  NodePort/host-reachable path) before anything in this role can run.
+- `install-platform.xayma.sh`'s `letsencrypt-dns01-production` ClusterIssuer
+  (DNS-01, for the wildcard Certificate) — see "Known caveats".
+- **A registry tag with the `redis` Python package installed**, referenced
+  via `odoo_image_repo` (default `odoo`, i.e. the stock Docker Hub image —
+  override this). `session_redis` (mandatory, see "Architecture") imports
+  `redis`, which the stock image does not ship. See "Custom Odoo image"
+  for how this role can build/push it for you (opt-in), or push it
+  yourself and leave that feature off.
 - The vault password, as a file (CLI) or a credential record (AWX).
+
+Migrating from the slice model
+---------------------------------
+This is a ground-up rewrite, not an incremental change. There is no
+automated migration path for **existing tenants** created by the old
+per-instance role — every tenant in scope for this migration needs a fresh
+`odoo_action=deploy` under the new model (which creates a NEW empty
+database, not a move of the old one). If tenants already exist in
+production under the old slice model, treat this as: back up the old
+tenant (its own external backup mechanism), stand up the new platform,
+`odoo_action=deploy` a same-named tenant onto it, then restore the old
+backup's data into the new tenant via `odoo_action=restore` (the MinIO
+snapshot layout is unchanged) rather than expecting any in-place upgrade.
+
+### Architecture changes
+
+| | Old (slice) | New (pool) |
+|---|---|---|
+| Namespace | One per customer | One (`xayma-odoo`) for the whole tier |
+| Compute | One Deployment per instance | 3 Deployments per **pool** (`version`+`plan`), shared by every tenant on that pool |
+| Postgres | One dedicated StatefulSet per instance | One shared StatefulSet for the whole tier |
+| Connection pooling | None | PgBouncer (transaction mode) in front of `{pool}-http` only |
+| Sessions | Odoo's default (filesystem, in-process) | Redis, mandatory, via `session_redis` |
+| TLS | One Certificate per instance (HTTP-01) | One wildcard Certificate (DNS-01) + per-tenant only for `custom_domain` |
+| Suspend/stop backend | One per customer namespace | One for the whole namespace |
+| Rate limiting | None | Per-tenant Traefik Middleware, sized from the plan |
+| Autoscaling | None | HPA on `{pool}-http`, inert until a second node exists |
+| Filestore/addons storage | One PVC pair per instance | One PVC pair for the whole tier (`filestore/{slug}/` subdirs) |
+
+### Calling app contract diff
+
+1. **`plan_*` flat vars are gone.** Send `plan` (a name, still required)
+   plus `plan_spec` (the full nested dict — see "Plan resolution" for the
+   schema and the pool-scoped/tenant-scoped split) as a real JSON
+   extra_var over the AWX API. There is no flat-field equivalent anymore.
+2. **Single launch target, but a new name.** The app now calls the
+   Workflow Job Template `odoo-tenant` (previously the app called this
+   role's own instance-scoped Job Template directly) — same extra_vars
+   contract otherwise. If the app hardcoded the old Job Template's numeric
+   ID, it needs the new WFJT's ID instead (see "Manual steps" below).
+3. **`version` is no longer sent on every lifecycle call.** Only
+   `deploy`/`change-plan`/`apply-plan` take `version`. Every other action
+   (`start`/`stop`/`suspend`/`restart`/`edit-domain`/`delete`/`backup`/
+   `restore`) drops it — the role recovers the tenant's current pool
+   assignment from live state. If the app was always sending `version`
+   regardless of action, it's now simply ignored for those actions (not an
+   error), but stop sending it if convenient.
+4. **New actions**: `change-plan` (move a tenant to a different plan, same
+   version), `apply-plan` (pool-scoped — resize an existing pool for every
+   tenant on it, admin-only), `backup` (on-demand single-tenant backup, for
+   the app's own nightly scheduler — see "Scheduled operations").
+5. **`restart` semantics changed.** It used to restart the tenant's own
+   Deployment+StatefulSet pods. It now only terminates that tenant's DB
+   backends and purges its Redis sessions — there is no per-tenant process
+   to restart anymore. If the app's UI describes this action to end users,
+   update the copy.
+6. **`odoo_action=deploy` no longer resets replica counts.** The old
+   "re-running deploy against a suspended/stopped instance resets it to
+   running" caveat is gone — deploy never touches Deployment replica
+   counts at all now (pools are shared; a single tenant's deploy call
+   can't scale one).
+7. **Create-only pool semantics** (see "Plan resolution") mean a
+   `deploy`/`change-plan` call's `plan_spec` pool-scoped values are
+   IGNORED once a pool already exists with a different frozen spec — if
+   the app expects a plan's sizing change to take effect immediately for
+   every tenant on that plan, it must call `apply-plan` explicitly, not
+   just re-send a different `plan_spec` on the next tenant's `deploy`.
+
+### Manual steps
+
+- [x] **Vault**: `vault_odoo_platform_password` — done (added to the
+      encrypted `defaults/main/02-credentials.yml`).
+- [ ] **Addons PVC population**: the shared `odoo-addons` PVC starts
+      empty. Run `odoo_action=sync-addons -e addons_repo_url=<git URL>`
+      (after at least one `deploy`, which bootstraps the PVC) before
+      deploying any tenant whose `init_modules` needs anything beyond
+      Odoo's own bundled modules — including `session_redis` itself, which
+      is mandatory.
+- [ ] **AWX one-time setup** — `roles/configure-awx` only *reconciles*
+      Job/Workflow Templates; it assumes an AWX Project, Inventory, and two
+      credentials already exist (by the exact names in
+      `roles/configure-awx/defaults/main.yml`, or override those defaults
+      to match names you already use):
+      1. **Project** (AWX UI: Resources → Projects → Add) — SCM type Git,
+         SCM URL = this repo, default name `deploy-odoo.xayma.sh`
+         (`awx_project_name`).
+      2. **Inventory** (Resources → Inventories → Add) containing the k3s
+         host(s) this role targets, default name `xayma-platform`
+         (`awx_inventory_name`).
+      3. **Machine credential** (Access → Credentials → Add, type
+         *Machine*) for SSH/local access to wherever the playbook actually
+         runs, default name `xayma-platform-ssh`
+         (`awx_machine_credential_name`).
+      4. **Vault credential** (Access → Credentials → Add, type *Vault*)
+         holding this repo's vault password, default name
+         `deploy-odoo-vault` (`awx_vault_credential_name`).
+      5. **AWX API token credential** — first mint a personal access token
+         (Access → Users → *your user* → Tokens → Add), then create a
+         credential of type *Red Hat Ansible Automation Platform*
+         (sometimes labelled *Controller*/*AWX*) using that token, default
+         name `awx-api-token` (`awx_controller_credential_name`). This is
+         the one `odoo-router` needs at runtime to call the AWX API and
+         launch the right internal Job Template — `configure-awx` attaches
+         it automatically, you just need the credential object to exist.
+      6. Install collections and run the setup playbook itself **against
+         the AWX API** (not the k3s cluster — different creds, different
+         target):
+         ```
+         ansible-galaxy install -r requirements.yml
+         export CONTROLLER_HOST=https://<your-awx-host>
+         export CONTROLLER_OAUTH_TOKEN=<a token with rights to create/edit templates>
+         ansible-playbook awx-setup.yml
+         ```
+         This creates/updates all 4 Job/Workflow Templates in one pass:
+         `odoo-lifecycle-internal`, `odoo-provision-internal`,
+         `odoo-router` (with the API token credential from step 5
+         attached), and the `odoo-tenant` WFJT (with its one node wired to
+         `odoo-router`) — plus the shared survey on all of them. It's
+         idempotent; re-run it any time `roles/configure-awx/defaults`
+         changes (e.g. a new survey field).
+      7. Point the calling app at `odoo-tenant`'s WFJT ID — find it in the
+         AWX UI (Templates → `odoo-tenant`) or via
+         `GET /api/v2/workflow_job_templates/?name=odoo-tenant`.
+- [x] **Wildcard Certificate / DNS-01**: done —
+      `install-platform.xayma.sh` provides `letsencrypt-dns01-production`,
+      and `wildcard_cluster_issuer` points at it by default.
+- [ ] **Custom Odoo image with `redis` installed** (see "Custom Odoo
+      image"): either push it yourself and point `odoo_image_repo` at it,
+      or install `nerdctl-full` on the k3s node and set
+      `odoo_image_build.enabled: true` (+ the two `vault_odoo_dockerhub_*`
+      seeds) to have this role build/push it automatically on first use.
+- [ ] **`community.postgresql` runtime requirement**: install
+      `psycopg2`/`psycopg` on whatever host/execution-environment runs this
+      role. Confirm that host can actually reach the shared Postgres's
+      ClusterIP directly (see "Requirements" for the co-located-execution
+      assumption this rewrite makes; if it doesn't hold, this needs a
+      different connectivity plan before anything works).
+- [x] **PgBouncer `auth_query` setup**: no manual step — the
+      `pgbouncer_auth` role and its `SECURITY DEFINER` lookup function are
+      created automatically by `tasks/_ensure-platform.yml` on the first
+      `deploy`.
 
 Dependencies
 ------------

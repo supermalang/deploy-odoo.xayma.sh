@@ -1,0 +1,71 @@
+---
+# include_tasks helper shared by every tenant-scoped action that does NOT
+# receive `version`/`plan`/state as extra_vars (start/stop/suspend/restart/
+# edit-domain/change-plan/delete/backup/restore all only take `odoo_action`+
+# identity vars - see README "Actions"). Recovers the tenant's CURRENT pool
+# assignment/state/custom-domain from live cluster state instead of
+# requiring the caller to resupply it, same "recover from live state" idiom
+# the old slice model used for domains/longpolling.
+#
+# Sets: tenant_pool_id, tenant_version, tenant_plan, tenant_state,
+#       tenant_custom_domain (empty string if none), tenant_pg_role,
+#       tenant_spec (partial - only the two keys any IngressRoute re-render
+#       needs: tenant_db_max_connections, ratelimit.{avg,burst} - init_modules
+#       is NOT recovered here since no recovered action ever re-runs init)
+- name: "[{{ tenant_name }}] Fetch the current IngressRoute"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: IngressRoute
+    api_version: traefik.io/v1alpha1
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ tenant_name }}"
+  register: _recover_ingressroute
+
+- name: "[{{ tenant_name }}] Assert the tenant has been deployed"
+  ansible.builtin.assert:
+    that: _recover_ingressroute.resources | length > 0
+    fail_msg: "No IngressRoute {{ tenant_name }} in {{ xayma_namespace }} - has this tenant been deployed?"
+
+- name: "[{{ tenant_name }}] Fetch the tenant's custom-domain Certificate, if any"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Certificate
+    api_version: cert-manager.io/v1
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ tenant_name }}-tls"
+  register: _recover_cert
+
+- name: "[{{ tenant_name }}] Fetch the tenant's ratelimit Middleware"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Middleware
+    api_version: traefik.io/v1alpha1
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ tenant_name }}-ratelimit"
+  register: _recover_ratelimit_mw
+
+- name: "[{{ tenant_name }}] Recover pool assignment/state/domain from live labels"
+  ansible.builtin.set_fact:
+    tenant_pool_id: "{{ _recover_ingressroute.resources[0].metadata.labels['xayma.sh/pool-id'] }}"
+    tenant_version: "{{ _recover_ingressroute.resources[0].metadata.labels['xayma.sh/odoo-version'] }}"
+    tenant_plan: "{{ _recover_ingressroute.resources[0].metadata.labels['xayma.sh/plan'] }}"
+    tenant_state: "{{ _recover_ingressroute.resources[0].metadata.labels['xayma.sh/state'] }}"
+    tenant_custom_domain: >-
+      {{ _recover_cert.resources[0].spec.dnsNames[0] if (_recover_cert.resources | length > 0) else '' }}
+
+- name: "[{{ tenant_name }}] Compute the tenant's current PG role name"
+  ansible.builtin.set_fact:
+    tenant_pg_role: "pool_{{ tenant_version }}_{{ tenant_plan }}"
+
+# Partial tenant_spec - just enough for any task that re-renders this
+# tenant's IngressRoute/ratelimit Middleware WITHOUT going through a fresh
+# _resolve-plan-spec.yml (start/stop/suspend/edit-domain never touch
+# sizing, so they must preserve whatever's already live, not recompute it).
+- name: "[{{ tenant_name }}] Recover the tenant's PgBouncer cap + ratelimit spec"
+  ansible.builtin.set_fact:
+    tenant_spec:
+      tenant_db_max_connections: >-
+        {{ _recover_ingressroute.resources[0].metadata.annotations[tenant_db_max_connections_annotation_key] }}
+      ratelimit:
+        avg: "{{ _recover_ratelimit_mw.resources[0].spec.rateLimit.average }}"
+        burst: "{{ _recover_ratelimit_mw.resources[0].spec.rateLimit.burst }}"

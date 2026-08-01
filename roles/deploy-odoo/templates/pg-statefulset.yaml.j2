@@ -1,20 +1,38 @@
 #jinja2: lstrip_blocks: True
 ---
-# Dedicated Postgres per instance (NOT the shared platform Postgres) — gives
-# per-tenant connection/resource isolation. Shape mirrors
-# install-platform.xayma.sh's deploy-databases/templates/postgres-statefulset.yaml.j2,
-# parameterized per-instance.
+# ONE shared Postgres for the entire tier (pg_topology: shared - see
+# vars/main.yml's `pg_target` seam; per_version/per_pool are reserved for
+# later). Node-pinned DELIBERATELY (its PVC is local-path, single-node
+# today) - see README "Before adding node 2". `postgres.node_selector`
+# defaults to {} (scheduler's free choice); set it once a real node name is
+# known and a second node is on the table, so the StatefulSet's PVC binding
+# doesn't strand it on the wrong node.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ pg_superuser_secret_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'postgres'}) | to_json }}
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: {{ _pg_superuser_password | to_json }}
+---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ pg_name }}
-  namespace: {{ customer_slug }}
-  labels: {{ odoo_labels_postgres | to_json }}
+  name: pg
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'postgres'}) | to_json }}
 spec:
-  clusterIP: None
+  # A regular ClusterIP (not headless) DELIBERATELY - Ansible's
+  # community.postgresql modules connect to this service's virtual IP
+  # directly from the control node (see tasks/_pg-connection.yml), which
+  # only works with a real ClusterIP to route to, not a headless service's
+  # per-pod DNS (unresolvable outside cluster DNS). replicas stays 1 while
+  # pg_topology == shared, so a plain ClusterIP loses nothing here.
+  clusterIP: ""
   selector:
     app.kubernetes.io/name: postgres
-    xayma.sh/instance: {{ instance_slug }}
   ports:
     - name: postgres
       port: 5432
@@ -23,68 +41,68 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: {{ pg_name }}
-  namespace: {{ customer_slug }}
-  labels: {{ odoo_labels_postgres | to_json }}
+  name: pg
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'postgres'}) | to_json }}
 spec:
-  serviceName: {{ pg_name }}
+  serviceName: pg
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: postgres
-      xayma.sh/instance: {{ instance_slug }}
   template:
     metadata:
-      labels: {{ odoo_labels_postgres | to_json }}
+      labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'postgres'}) | to_json }}
     spec:
+{% if postgres.node_selector %}
+      nodeSelector: {{ postgres.node_selector | to_json }}
+{% endif %}
       containers:
         - name: postgres
           image: postgres:{{ versions.postgres }}
-          ports:
-            - name: postgres
-              containerPort: 5432
+          # max_connections passed directly as a `-c` override - no separate
+          # postgresql.conf ConfigMap needed for one setting.
+          args: ["-c", "max_connections={{ postgres.max_connections }}"]
           env:
-            - name: POSTGRES_DB
-              value: postgres
             - name: POSTGRES_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ instance_name }}
-                  key: DB_USER
+              value: postgres
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ instance_name }}
-                  key: DB_PASSWORD
+                  name: {{ pg_superuser_secret_name }}
+                  key: POSTGRES_PASSWORD
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
           resources:
             requests:
-              cpu: "{{ plan_pg_cpu_request }}"
-              memory: "{{ plan_pg_mem_request }}"
+              cpu: "{{ postgres.cpu_request }}"
+              memory: "{{ postgres.mem_request }}"
             limits:
-              cpu: "{{ plan_pg_cpu_limit }}"
-              memory: "{{ plan_pg_mem_limit }}"
+              cpu: "{{ postgres.cpu_limit }}"
+              memory: "{{ postgres.mem_limit }}"
           readinessProbe:
             exec:
-              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\""]
+              command: ["pg_isready", "-U", "postgres"]
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:
             exec:
-              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\""]
+              command: ["pg_isready", "-U", "postgres"]
             initialDelaySeconds: 30
             periodSeconds: 15
   volumeClaimTemplates:
     - metadata:
         name: data
-        labels: {{ odoo_labels_postgres | to_json }}
+        labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'postgres'}) | to_json }}
       spec:
         accessModes: ["ReadWriteOnce"]
         storageClassName: {{ odoo.storage_class }}
         resources:
           requests:
-            storage: {{ plan_pg_storage }}
+            storage: {{ postgres.storage }}

@@ -1,0 +1,43 @@
+---
+# include_tasks helper shared by _set-tenant-state.yml (suspend/stop) and
+# restart-tenant.yml. Verified against camptocamp/odoo-cloud-platform's
+# session_redis addon (19.0 branch, session.py): the Redis KEY is
+# `session:<sid>` or `session::<pool_id>:<sid>` (see
+# ODOO_SESSION_REDIS_PREFIX in pool-deployments.yaml.j2) - there is NO
+# per-tenant/per-database segment in the key at all, only in the stored
+# session VALUE's `db` field. A plain `--scan --pattern` on the tenant slug
+# would therefore match NOTHING - this has to fetch each session's value
+# and filter on that field instead, done server-side via a Lua script
+# (SCAN+GET+cjson.decode+DEL) rather than round-tripping every key through
+# the exec session.
+- name: "[{{ tenant_name }}] Purge this tenant's Redis sessions"
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ xayma_namespace }}"
+    pod: "{{ redis_pod_name }}"
+    container: redis
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        cat > /tmp/purge_tenant_sessions.lua <<'LUAEOF'
+        local cursor = "0"
+        local deleted = 0
+        repeat
+          local result = redis.call("SCAN", cursor, "MATCH", "session:*", "COUNT", 1000)
+          cursor = result[1]
+          for _, key in ipairs(result[2]) do
+            local val = redis.call("GET", key)
+            if val then
+              local ok, data = pcall(cjson.decode, val)
+              if ok and type(data) == "table" and data["db"] == ARGV[1] then
+                redis.call("DEL", key)
+                deleted = deleted + 1
+              end
+            end
+          end
+        until cursor == "0"
+        return deleted
+        LUAEOF
+        redis-cli -a "$REDIS_PASSWORD" --no-auth-warning --eval /tmp/purge_tenant_sessions.lua , "{{ instance_slug }}"

@@ -1,18 +1,19 @@
 ---
-# Runs for every action (see main.yml). Fails clearly on un-sluggable input
-# rather than letting the Kubernetes API reject a malformed resource name
-# deep into a multi-manifest apply.
+# Runs for every tenant-scoped action (see main.yml; sync-addons is
+# namespace-scoped and skips this entirely). Fails clearly on un-sluggable
+# input rather than letting the Kubernetes API reject a malformed resource
+# name deep into a multi-manifest apply.
 - name: Assert customer/instance identity slugify cleanly to valid k8s names
   ansible.builtin.assert:
     that:
       - customer_slug is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
       - instance_slug is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
-      - instance_name | length <= 63
+      - tenant_name | length <= 63
       - version | string is match('^[0-9]+$')
     fail_msg: >-
       customer ({{ customer }} -> {{ customer_slug }}) and/or instancename
       ({{ instancename }} -> {{ instance_slug }}) don't slugify to a valid
-      RFC-1123 k8s name, or the derived instance_name ({{ instance_name }})
-      exceeds 63 characters. Use a shorter/simpler customer and instance name.
-      version ({{ version }}) must be the MAJOR version integer only (e.g.
-      "19", not "18.0").
+      RFC-1123 k8s name, or the derived tenant_name ({{ tenant_name }})
+      exceeds 63 characters. Use a shorter/simpler customer and instance
+      name. version ({{ version }}) must be the MAJOR version integer only
+      (e.g. "19", not "18.0").

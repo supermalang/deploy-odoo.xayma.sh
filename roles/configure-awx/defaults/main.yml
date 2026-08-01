@@ -1,0 +1,44 @@
+---
+# Names of the AWX objects this role manages - see README "AWX". This role
+# does NOT create the AWX Project, Inventory, or machine/vault credentials
+# it references below by name - those are org-specific bootstrapping
+# (create them once in the AWX UI/API first - see the main README's "Manual
+# steps"). Run this role/playbook with CONTROLLER_HOST +
+# CONTROLLER_USERNAME/CONTROLLER_PASSWORD (or CONTROLLER_OAUTH_TOKEN) set
+# in the environment - the awx.awx collection's connection convention, not
+# something this role sets for you.
+awx_project_name: "deploy-odoo.xayma.sh"
+awx_inventory_name: "xayma-platform"
+awx_machine_credential_name: "xayma-platform-ssh"
+awx_vault_credential_name: "deploy-odoo-vault"
+# Attached ONLY to odoo-router - injects CONTROLLER_HOST/CONTROLLER_OAUTH_TOKEN
+# so awx-router.yml's awx.awx.job_launch/job_wait calls can reach the AWX API
+# at RUNTIME (a separate concern from the env vars this role itself needs
+# at PROVISIONING time, above).
+awx_controller_credential_name: "awx-api-token"
+
+awx_wfjt_name: odoo-tenant
+awx_lifecycle_jt_name: odoo-lifecycle-internal
+awx_provision_jt_name: odoo-provision-internal
+awx_router_jt_name: odoo-router
+
+# Shared survey fields every entry-point Job Template exposes - the router
+# and both internal templates all take the SAME extra_vars contract (see
+# main README "Input contract"). `plan_spec_json` is the ONE manual-run
+# fallback for plan_spec (a JSON string, parsed by
+# deploy-odoo's tasks/_resolve-plan-spec.yml).
+awx_survey_spec:
+  description: "deploy-odoo tenant/pool lifecycle contract"
+  spec:
+    - {question_name: "Action", variable: odoo_action, type: multiplechoice, required: true,
+       choices: "deploy\nstart\nstop\nsuspend\nrestart\nedit-domain\nchange-plan\napply-plan\nchange-version\ndelete\nrestore\nbackup\nsync-addons"}
+    - {question_name: "Customer", variable: customer, type: text, required: false}
+    - {question_name: "Instance name", variable: instancename, type: text, required: false}
+    - {question_name: "Odoo version", variable: version, type: text, required: false, default: "19"}
+    - {question_name: "Custom domain", variable: custom_domain, type: text, required: false}
+    - {question_name: "Plan name", variable: plan, type: text, required: false, default: "standard"}
+    - {question_name: "Plan spec (JSON, manual-run fallback)", variable: plan_spec_json, type: textarea, required: false}
+    - {question_name: "Snapshot ID (restore)", variable: snapshot_id, type: text, required: false}
+    - {question_name: "Snapshot kind (restore/backup)", variable: snapshot_kind, type: multiplechoice, required: false, default: daily, choices: "daily\nadhoc"}
+    - {question_name: "Addons repo URL (sync-addons)", variable: addons_repo_url, type: text, required: false}
+    - {question_name: "Addons repo ref (sync-addons)", variable: addons_repo_ref, type: text, required: false, default: main}

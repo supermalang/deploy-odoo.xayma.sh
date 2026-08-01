@@ -1,0 +1,139 @@
+#jinja2: lstrip_blocks: True
+{% set _has_custom = (custom_domain is defined and (custom_domain | length) > 0 and custom_domain != default_domain) %}
+---
+# Per-tenant admission control (ratelimit is TENANT-scoped, not pool-scoped
+# - see README "Plan resolution"). sourceCriterion left at Traefik's
+# default (the directly-connecting IP, not X-Forwarded-For) - correct as
+# long as Traefik is itself the edge with nothing in front terminating
+# client TCP connections. If a real upstream LB is added later, this needs
+# an explicit ipStrategy.depth matching how many X-Forwarded-For hops it adds.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ tenant_ratelimit_mw_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ tenant_labels | to_json }}
+spec:
+  rateLimit:
+    average: {{ tenant_spec.ratelimit.avg }}
+    burst: {{ tenant_spec.ratelimit.burst }}
+{% if _has_custom %}
+---
+# Only the custom_domain route uses this - every pool shares one
+# dbfilter=^%d$ odoo.conf that resolves the target database from the Host
+# header's first label, so a request arriving on a DIFFERENT host needs its
+# backend-bound Host rewritten to default_domain before it reaches the pool
+# (see vars/main.yml).
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ tenant_hostrewrite_mw_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ tenant_labels | to_json }}
+spec:
+  headers:
+    customRequestHeaders:
+      Host: "{{ default_domain }}"
+{% endif %}
+---
+# Primary IngressRoute (default host, wildcard-tls) - carries the durable
+# pool-assignment/state labels + the PgBouncer-cap annotation that
+# _recover-tenant.yml/_sync-pgbouncer-tenants.yml read back on every action
+# that doesn't get version/plan/tenant_spec resupplied (start/stop/suspend/
+# restart/edit-domain/change-plan/delete/backup/restore - see README
+# "Actions"). instance_state (running|suspended|stopped) picks the target:
+# the tenant's pool when running, or the shared suspend-backend otherwise -
+# with the websocket route DROPPED entirely when not running.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ tenant_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ tenant_pool_assignment_labels | to_json }}
+  annotations: {{ tenant_pool_assignment_annotations | to_json }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+{% if instance_state | default('running') == 'running' %}
+    - match: PathPrefix(`/websocket`) && Host(`{{ default_domain }}`)
+      kind: Rule
+      priority: 100
+      services:
+        - {name: {{ pool_gevent_name }}, port: 8072}
+      middlewares:
+        - {name: mw-errors-404}
+        - {name: mw-errors-50x}
+        - {name: {{ tenant_ratelimit_mw_name }}}
+    - match: Host(`{{ default_domain }}`)
+      kind: Rule
+      priority: 50
+      services:
+        - {name: {{ pool_http_name }}, port: 8069}
+      middlewares:
+        - {name: mw-errors-404}
+        - {name: mw-errors-50x}
+        - {name: {{ tenant_ratelimit_mw_name }}}
+{% else %}
+    - match: Host(`{{ default_domain }}`)
+      kind: Rule
+      priority: 50
+      services:
+        - {name: {{ suspend_backend_name }}, port: 80}
+      middlewares:
+        - {name: "mw-{{ instance_state }}"}
+{% endif %}
+  tls:
+    secretName: wildcard-tls
+{% if _has_custom %}
+---
+# Companion IngressRoute for custom_domain - a SEPARATE object (not a
+# second route on the primary one) because Traefik's IngressRoute `tls` is
+# one secretName per OBJECT, and the default host + custom_domain need
+# DIFFERENT certs (wildcard-tls vs this tenant's own - see
+# tenant-certificate.yaml.j2). Deleted (along with its Certificate and the
+# hostrewrite Middleware) whenever custom_domain is cleared - see
+# deploy-tenant.yml/edit-tenant-domain.yml.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{ tenant_name }}-custom
+  namespace: {{ xayma_namespace }}
+  labels: {{ tenant_pool_assignment_labels | to_json }}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+{% if instance_state | default('running') == 'running' %}
+    - match: PathPrefix(`/websocket`) && Host(`{{ custom_domain }}`)
+      kind: Rule
+      priority: 100
+      services:
+        - {name: {{ pool_gevent_name }}, port: 8072}
+      middlewares:
+        - {name: {{ tenant_hostrewrite_mw_name }}}
+        - {name: mw-errors-404}
+        - {name: mw-errors-50x}
+        - {name: {{ tenant_ratelimit_mw_name }}}
+    - match: Host(`{{ custom_domain }}`)
+      kind: Rule
+      priority: 50
+      services:
+        - {name: {{ pool_http_name }}, port: 8069}
+      middlewares:
+        - {name: {{ tenant_hostrewrite_mw_name }}}
+        - {name: mw-errors-404}
+        - {name: mw-errors-50x}
+        - {name: {{ tenant_ratelimit_mw_name }}}
+{% else %}
+    - match: Host(`{{ custom_domain }}`)
+      kind: Rule
+      priority: 50
+      services:
+        - {name: {{ suspend_backend_name }}, port: 80}
+      middlewares:
+        - {name: "mw-{{ instance_state }}"}
+{% endif %}
+  tls:
+    secretName: {{ tenant_name }}-tls
+{% endif %}

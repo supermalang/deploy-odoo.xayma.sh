@@ -1,0 +1,18 @@
+#jinja2: lstrip_blocks: True
+---
+# Only rendered when custom_domain is set - the default host is covered by
+# the platform wildcard Certificate (see certificate-wildcard.yaml.j2).
+# Uses `cluster_issuer` (HTTP-01 - fine for a single non-wildcard name).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ tenant_name }}-tls
+  namespace: {{ xayma_namespace }}
+  labels: {{ tenant_labels | to_json }}
+spec:
+  secretName: {{ tenant_name }}-tls
+  dnsNames:
+    - "{{ custom_domain }}"
+  issuerRef:
+    name: "{{ cluster_issuer }}"
+    kind: ClusterIssuer

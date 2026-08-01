@@ -1,0 +1,68 @@
+#jinja2: lstrip_blocks: True
+---
+# Minimal observability hook (see README "Observability") - the platform's
+# monitoring is expected to scrape this + Traefik's own router metrics and
+# configure the three alerts documented there (pool CPU/worker occupation
+# p95, PG disk usage, per-db size growth). Dashboards are out of scope here.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-exporter
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'postgres-exporter'}) | to_json }}
+type: Opaque
+stringData:
+  DATA_SOURCE_NAME: "postgresql://{{ pg_exporter_role }}:{{ _pg_exporter_password }}@{{ pg_target }}:5432/postgres?sslmode=disable"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ postgres_exporter_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'postgres-exporter'}) | to_json }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9187"
+spec:
+  selector:
+    app.kubernetes.io/name: postgres-exporter
+  ports:
+    - name: metrics
+      port: 9187
+      targetPort: 9187
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ postgres_exporter_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'postgres-exporter'}) | to_json }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-exporter
+  template:
+    metadata:
+      labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'postgres-exporter'}) | to_json }}
+    spec:
+      containers:
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:{{ versions.postgres_exporter }}
+          envFrom:
+            - secretRef:
+                name: postgres-exporter
+          ports:
+            - name: metrics
+              containerPort: 9187
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          readinessProbe:
+            httpGet: {path: /metrics, port: 9187}
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          livenessProbe:
+            httpGet: {path: /metrics, port: 9187}
+            initialDelaySeconds: 15
+            periodSeconds: 30

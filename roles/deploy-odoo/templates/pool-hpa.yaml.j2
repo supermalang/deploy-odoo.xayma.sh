@@ -1,0 +1,36 @@
+#jinja2: lstrip_blocks: True
+---
+# {pool}-http is the ONLY autoscaled Deployment (cron/gevent are always
+# exactly 1 replica - see pool-deployments.yaml.j2). Conservative behavior:
+# scale up at most 1 pod/60s, scale down only after a 300s stabilization
+# window - correct-but-inert on a single node today (extra pods just pend
+# if there's no room - see README "Before adding node 2").
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ pool_hpa_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ pool_labels_http | to_json }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ pool_http_name }}
+  minReplicas: {{ pool_spec.replicas_min }}
+  maxReplicas: {{ pool_spec.replicas_max }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 65
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - {type: Pods, value: 1, periodSeconds: 60}
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - {type: Pods, value: 1, periodSeconds: 60}

@@ -1,0 +1,120 @@
+#jinja2: lstrip_blocks: True
+---
+# Transaction-mode pooling in front of the shared Postgres. A StatefulSet
+# (not a Deployment) SPECIFICALLY for a deterministic pod name
+# ({{ pgbouncer_pod_name }}) - tasks/_sync-pgbouncer-tenants.yml execs a
+# SIGHUP into it on every tenant deploy/change-plan/delete. Per-tenant caps
+# live in a SEPARATE ConfigMap (%include'd below), owned by
+# _sync-pgbouncer-tenants.yml - see that file + vars/main.yml for why.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgbouncer-config
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'pgbouncer'}) | to_json }}
+data:
+  pgbouncer.ini: |
+    [databases]
+    * = host={{ pg_target }} port=5432
+    %include /etc/pgbouncer/tenants/tenants.ini
+
+    [pgbouncer]
+    listen_addr = 0.0.0.0
+    listen_port = 6432
+    auth_type = scram-sha-256
+    auth_user = {{ pgbouncer_auth_role }}
+    auth_query = SELECT usename, passwd FROM public.pgbouncer_auth_lookup($1)
+    auth_file = /etc/pgbouncer/userlist.txt
+    pool_mode = transaction
+    default_pool_size = {{ pgbouncer.default_pool_size }}
+    max_client_conn = {{ pgbouncer.max_client_conn }}
+    admin_users = {{ pgbouncer_auth_role }}
+---
+# pgbouncer_auth's OWN outbound credential (for running the auth_query
+# against Postgres) - a PLAINTEXT userlist entry, same trust model as every
+# other secret in this role (a k8s Secret, never vault-file-managed
+# per-object). Client-facing auth is handled dynamically by `auth_query`
+# above - this entry is ONLY consulted for PgBouncer's own backend
+# connection to Postgres.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pgbouncer-userlist
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'pgbouncer'}) | to_json }}
+type: Opaque
+stringData:
+  userlist.txt: |
+    "{{ pgbouncer_auth_role }}" "{{ _pgbouncer_auth_password }}"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ pgbouncer_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'pgbouncer'}) | to_json }}
+spec:
+  selector:
+    app.kubernetes.io/name: pgbouncer
+  ports:
+    # Port 5432 (not PgBouncer's native 6432) so odoo.conf's db_port stays
+    # the same literal value regardless of whether db_host points at
+    # PgBouncer or directly at `pg` - see pool-configmap.yaml.j2.
+    - name: pgbouncer
+      port: 5432
+      targetPort: 6432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ pgbouncer_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'pgbouncer'}) | to_json }}
+spec:
+  serviceName: {{ pgbouncer_name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer
+  template:
+    metadata:
+      labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'pgbouncer'}) | to_json }}
+    spec:
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:{{ versions.pgbouncer }}
+          command: ["pgbouncer", "/etc/pgbouncer/pgbouncer.ini"]
+          ports:
+            - name: pgbouncer
+              containerPort: 6432
+          volumeMounts:
+            - name: config
+              mountPath: /etc/pgbouncer/pgbouncer.ini
+              subPath: pgbouncer.ini
+            - name: userlist
+              mountPath: /etc/pgbouncer/userlist.txt
+              subPath: userlist.txt
+            - name: tenants
+              mountPath: /etc/pgbouncer/tenants
+          resources:
+            requests:
+              cpu: "{{ pgbouncer.cpu_request }}"
+              memory: "{{ pgbouncer.mem_request }}"
+            limits:
+              cpu: "{{ pgbouncer.cpu_limit }}"
+              memory: "{{ pgbouncer.mem_limit }}"
+          readinessProbe:
+            tcpSocket: {port: 6432}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: 6432}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: config
+          configMap: {name: pgbouncer-config}
+        - name: userlist
+          secret: {secretName: pgbouncer-userlist}
+        - name: tenants
+          configMap: {name: {{ pgbouncer_tenants_configmap_name }}}

@@ -1,0 +1,76 @@
+---
+# include_tasks helper - regenerates the FULL pgbouncer-tenants ConfigMap
+# (one `[databases]` line per live tenant, each with its own
+# `tenant_db_max_connections` cap - see vars/main.yml's header comment on
+# why PgBouncer needs per-tenant entries at all) from every live tenant
+# IngressRoute's annotation, then RELOADs PgBouncer so the change takes
+# effect without dropping existing connections. A FULL REPLACE, not an
+# incremental patch - concurrent tenant deploys touching this ConfigMap can
+# never race or corrupt each other's entry.
+#
+# Optional overrides let the caller inject/override the CURRENT tenant's
+# entry even before its own IngressRoute carries the annotation yet
+# (deploy-tenant.yml, mid-creation) or before it's been updated
+# (change-plan.yml): `_pgb_override_slug` + `_pgb_override_cap`.
+# delete-tenant.yml needs no override - its IngressRoute is already gone by
+# the time this runs, so the tenant naturally drops out of the list.
+
+- name: "List every live tenant IngressRoute"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: IngressRoute
+    api_version: traefik.io/v1alpha1
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "xayma.sh/customer"
+  register: _pgb_tenants_raw
+
+- name: "Build the tenant slug -> cap map from live annotations"
+  ansible.builtin.set_fact:
+    _pgb_tenant_caps: >-
+      {{ dict(
+           (_pgb_tenants_raw.resources | map(attribute='metadata.labels') | map(attribute='xayma.sh/instance') | list)
+           | zip(_pgb_tenants_raw.resources | map(attribute='metadata.annotations')
+                 | map(attribute=tenant_db_max_connections_annotation_key) | list)
+         ) }}
+
+- name: "Overlay this call's tenant, if given"
+  ansible.builtin.set_fact:
+    _pgb_tenant_caps: "{{ _pgb_tenant_caps | combine({_pgb_override_slug: _pgb_override_cap | string}) }}"
+  when: _pgb_override_slug is defined
+
+- name: "Render + apply the pgbouncer-tenants ConfigMap"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: pgbouncer-tenants-configmap.yaml.j2
+
+# Only relevant on/near first-ever bootstrap (pgbouncer's pod may still be
+# starting) - every later call finds it already Ready near-instantly.
+- name: "Wait for the PgBouncer pod to be Ready before reloading it"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Pod
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ pgbouncer_pod_name }}"
+  register: _pgb_pod
+  until: >-
+    _pgb_pod.resources | length > 0 and
+    _pgb_pod.resources[0].status.containerStatuses | default([])
+    | selectattr('ready', 'equalto', true) | list | length > 0
+  retries: 30
+  delay: 5
+
+# PgBouncer reloads its config (including %include'd files) on SIGHUP,
+# equivalent to the admin console's RELOAD command, without dropping
+# already-open connections - avoids needing a psql client inside the
+# (minimal) PgBouncer image just to run RELOAD. Assumes pgbouncer is PID 1
+# in its container, true for the pinned edoburu/pgbouncer image.
+- name: "RELOAD PgBouncer so the new tenant caps take effect"
+  kubernetes.core.k8s_exec:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ xayma_namespace }}"
+    pod: "{{ pgbouncer_pod_name }}"
+    container: pgbouncer
+    command: ["kill", "-HUP", "1"]

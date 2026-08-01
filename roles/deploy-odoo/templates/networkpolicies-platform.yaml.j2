@@ -1,0 +1,171 @@
+#jinja2: lstrip_blocks: True
+---
+# Written BY THIS ROLE, ONCE, at bootstrap (_ensure-platform.yml) - generic,
+# component-label-driven selectors (xayma.sh/pool-role, xayma.sh/job-role)
+# so these never need a per-pool or per-tenant copy. NetworkPolicy `ports`
+# below are always the POD's own container port, not a Service's port (they
+# can differ - see pgbouncer, container 6432 vs Service 5432).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Edge (Traefik/kube-system) -> any pool's http/gevent pods (the only two
+# pool-roles a tenant's IngressRoute ever targets - cron is never routed to).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-edge-to-pool-http-gevent
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: ["odoo"]}
+      - {key: xayma.sh/pool-role, operator: In, values: ["http", "gevent"]}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 8069
+        - port: 8072
+---
+# {pool}-http pods + Jobs -> PgBouncer (container port 6432).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-pools-jobs-to-pgbouncer
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: odoo
+              xayma.sh/pool-role: http
+        - podSelector:
+            matchExpressions:
+              - {key: xayma.sh/job-role, operator: Exists}
+      ports:
+        - port: 6432
+---
+# PgBouncer -> Postgres; {pool}-cron/{pool}-gevent (direct PG, never
+# pooled) + every Job -> Postgres direct; xayma-tools (observability,
+# pgAdmin) -> Postgres - all on the shared PG's port 5432.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-to-pg
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: pgbouncer
+        - podSelector:
+            matchExpressions:
+              - {key: app.kubernetes.io/name, operator: In, values: ["odoo"]}
+              - {key: xayma.sh/pool-role, operator: In, values: ["cron", "gevent"]}
+        - podSelector:
+            matchExpressions:
+              - {key: xayma.sh/job-role, operator: Exists}
+        - namespaceSelector:
+            matchLabels:
+              xayma.sh/network-zone: observability
+      ports:
+        - port: 5432
+---
+# Every pool pod (session_redis is loaded on all of them) + init/fixup Jobs
+# (the only Jobs that run the odoo binary, which also loads
+# server_wide_modules=session_redis at startup) -> Redis.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-pools-jobs-to-redis
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: odoo
+        - podSelector:
+            matchExpressions:
+              - {key: xayma.sh/job-role, operator: In, values: ["init", "fixup"]}
+      ports:
+        - port: 6379
+---
+# Edge -> suspend-backend. This is edge->suspend-backend (not
+# pools->suspend-backend) DELIBERATELY - Traefik's `errors` middleware
+# calls out to the configured error service FROM THE EDGE itself when a
+# pool backend returns 404/50x, never from a pool pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-edge-to-suspend-backend
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: suspend-backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 80
+---
+# Edge -> cert-manager's transient cm-acme-http-solver pod(s), for
+# per-tenant custom_domain Certificates (HTTP-01, via `cluster_issuer`) -
+# the wildcard Certificate uses DNS-01 and never needs this. Without this,
+# default-deny-ingress blocks the challenge and certs never issue.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-edge-to-acme-solver
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system

@@ -1,8 +1,25 @@
 ---
 # Galaxy collections required by this role (k3s / Kubernetes deployment).
 # Install with: ansible-galaxy collection install -r requirements.yml
+#
+# community.postgresql connects DIRECTLY to the shared Postgres (see
+# vars/main.yml's `pg_conn_host` + tasks/_pg-connection.yml) - this assumes
+# the Ansible control node/AWX execution environment is co-located with the
+# k3s node (consistent with `kubeconfig_path` defaulting to a local file
+# path, /etc/rancher/k3s/k3s.yaml) and can reach the cluster's Service CIDR
+# directly. It also requires `psycopg2`/`psycopg` installed on the control
+# node - see README "Requirements".
 collections:
   - name: kubernetes.core
     version: ">=6.4.0"
   - name: community.general
     version: ">=8.0.0"
+  - name: community.postgresql
+    version: ">=3.0.0"
+  - name: awx.awx
+    version: ">=24.0.0"
+
+# No collection needed for odoo_image_build.enabled (see
+# defaults/main/01-deploy-odoo-defaults.yml + tasks/_ensure-odoo-image.yml) -
+# it shells out to `nerdctl` (nerdctl-full release, not the bare binary)
+# against k3s's own embedded containerd, not a Docker daemon/SDK.

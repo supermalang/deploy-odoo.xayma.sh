@@ -1,0 +1,5 @@
+---
+- name: Stop the tenant (REVOKE DB access, purge sessions, repoint IngressRoute at the stopped page)
+  ansible.builtin.include_tasks: _set-tenant-state.yml
+  vars:
+    _state_target: stopped

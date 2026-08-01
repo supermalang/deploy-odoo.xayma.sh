@@ -1,0 +1,9 @@
+galaxy_info:
+  author: Elhadji Malang Diedhiou
+  description: Configures the AWX router pattern (WFJT + internal Job Templates) for deploy-odoo
+  company: Elhadji Malang Consultancy Services
+  license: MIT
+  min_ansible_version: "2.9"
+  galaxy_tags: []
+
+dependencies: []

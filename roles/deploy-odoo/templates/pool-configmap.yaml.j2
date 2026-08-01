@@ -1,0 +1,80 @@
+#jinja2: lstrip_blocks: True
+---
+# ONE odoo.conf shared by all three of this pool's Deployments - what
+# differs per Deployment (workers/max_cron_threads/db_host) is layered on
+# top via CLI flags + an env-driven ${DB_HOST} substitution, NOT three
+# separate files (see pool-deployments.yaml.j2's initContainer). POOL-SCOPED
+# - create-only (see _resolve-pool.yml); the annotation records exactly
+# which pool_spec this was built from.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ pool_config_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ pool_labels | to_json }}
+  annotations:
+    {{ pool_spec_hash_annotation_key }}: "{{ pool_spec_hash }}"
+data:
+  odoo.conf: |
+    [options]
+    ; db_user/db_password/db_host are ${PLACEHOLDER} tokens substituted from
+    ; the pool Secret + a per-Deployment env var into a shared emptyDir by
+    ; each Deployment's own initContainer - never baked in here in
+    ; plaintext, and db_host varies (PgBouncer for http, direct Postgres for
+    ; cron/gevent - LISTEN/NOTIFY, which gevent's long-polling depends on,
+    ; is incompatible with transaction pooling).
+    db_user = ${DB_USER}
+    db_password = ${DB_PASSWORD}
+    db_host = ${DB_HOST}
+    db_port = 5432
+    dbfilter = ^%d$
+    list_db = False
+
+    ; Per-worker-process demand-side cap - NOT the per-tenant fairness
+    ; lever. That's PgBouncer's tenant_db_max_connections (see README
+    ; "Plan resolution"); raising this does not fix per-tenant starvation,
+    ; it only lets one worker hold more PG connections at once.
+    db_maxconn = {{ pool_spec.db_maxconn }}
+
+    logfile = False
+    log-level = warn
+
+    interface =
+    port = 8069
+    proxy_mode = True
+    longpolling_port = 8072
+
+    addons_path = /opt/extra-addons
+    ; session_redis (MANDATORY - no filesystem fallback) is configured
+    ; ENTIRELY via ODOO_SESSION_REDIS_* environment variables on the odoo
+    ; process, not here - see pool-deployments.yaml.j2. Loading it via
+    ; server_wide_modules is still config-file business; its own runtime
+    ; behavior is not.
+    server_wide_modules = web,session_redis
+
+    timezone = Africa/Dakar
+    load_language = fr_FR
+    language = fr_FR
+
+    ; workers/max_cron_threads are the {pool}-http shape here - {pool}-cron/
+    ; {pool}-gevent override BOTH via CLI flags (see pool-deployments.yaml.j2).
+    workers = {{ pool_spec.workers }}
+    max_cron_threads = 0
+
+    ; limit_memory_soft/hard kept BELOW the pod's own memory limit
+    ; ({{ pool_spec.pod.mem_limit }}) so Odoo self-recycles a worker before
+    ; Kubernetes OOMKills the whole pod.
+    limit_memory_soft = {{ pool_spec.limits.mem_soft }}
+    limit_memory_hard = {{ pool_spec.limits.mem_hard }}
+    limit_time_cpu = {{ pool_spec.limits.time_cpu }}
+    limit_time_real = {{ pool_spec.limits.time_real }}
+    limit_request = {{ pool_spec.limits.request }}
+
+    osv_memory_count_limit = False
+    osv_memory_age_limit = 1.0
+
+    smtp_server = localhost
+    email_from = "exemple@{{ platform_domain }}"
+
+    test_enable = False
+    without_demo = all

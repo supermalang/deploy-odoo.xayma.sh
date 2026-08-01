@@ -1,0 +1,67 @@
+---
+# Validates the shape of `_resolved_spec` (see _resolve-plan-spec.yml) - a
+# malformed plan_spec (missing key, wrong type, an inverted memory ceiling)
+# fails HERE, before it ever reaches a pool manifest.
+- name: Assert the resolved plan_spec has every required key
+  ansible.builtin.assert:
+    that:
+      - _resolved_spec.workers is defined
+      - _resolved_spec.replicas_min is defined
+      - _resolved_spec.replicas_max is defined
+      - _resolved_spec.pod is defined
+      - _resolved_spec.pod.cpu_request is defined
+      - _resolved_spec.pod.cpu_limit is defined
+      - _resolved_spec.pod.mem_request is defined
+      - _resolved_spec.pod.mem_limit is defined
+      - _resolved_spec.limits is defined
+      - _resolved_spec.limits.mem_soft is defined
+      - _resolved_spec.limits.mem_hard is defined
+      - _resolved_spec.limits.time_cpu is defined
+      - _resolved_spec.limits.time_real is defined
+      - _resolved_spec.limits.request is defined
+      - _resolved_spec.cron is defined
+      - _resolved_spec.cron.threads is defined
+      - _resolved_spec.db_maxconn is defined
+      - _resolved_spec.init_modules is defined
+      - _resolved_spec.tenant_db_max_connections is defined
+      - _resolved_spec.ratelimit is defined
+      - _resolved_spec.ratelimit.avg is defined
+      - _resolved_spec.ratelimit.burst is defined
+    fail_msg: >-
+      plan_spec for plan={{ plan }} is missing required keys after merging
+      with the catalog/hard-fallback - see README "Plan resolution" for the
+      full schema. Resolved: {{ _resolved_spec }}
+
+- name: Assert the resolved plan_spec's types/ranges are sane
+  ansible.builtin.assert:
+    that:
+      - _resolved_spec.workers | int >= 2
+      - _resolved_spec.replicas_min | int >= 1
+      - _resolved_spec.replicas_max | int >= _resolved_spec.replicas_min | int
+      - _resolved_spec.cron.threads | int >= 1
+      - _resolved_spec.db_maxconn | int >= 1
+      - _resolved_spec.tenant_db_max_connections | int >= 1
+      - _resolved_spec.ratelimit.avg | int >= 1
+      - _resolved_spec.ratelimit.burst | int >= _resolved_spec.ratelimit.avg | int
+      - _resolved_spec.init_modules | length > 0
+    fail_msg: >-
+      plan_spec for plan={{ plan }} has an out-of-range value (workers must
+      be >=2 - see README on prefork mode - and replicas_max/ratelimit.burst
+      must be >= their min/avg counterparts). Resolved: {{ _resolved_spec }}
+
+# limit_memory_soft/hard must stay BELOW the pod's own memory limit so Odoo
+# self-recycles a worker before Kubernetes OOMKills the whole pod - same
+# invariant the previous per-instance role enforced via comment discipline
+# alone; here it's a hard assert since a bad plan_spec now comes from
+# outside this repo.
+- name: Assert limits.mem_soft/mem_hard stay below the pod's own memory limit
+  ansible.builtin.assert:
+    that:
+      - (_resolved_spec.limits.mem_soft | int) < (_resolved_spec.pod.mem_limit | human_to_bytes)
+      - (_resolved_spec.limits.mem_hard | int) < (_resolved_spec.pod.mem_limit | human_to_bytes)
+      - (_resolved_spec.limits.mem_soft | int) <= (_resolved_spec.limits.mem_hard | int)
+    fail_msg: >-
+      plan_spec for plan={{ plan }}: limits.mem_soft/mem_hard
+      ({{ _resolved_spec.limits.mem_soft }}/{{ _resolved_spec.limits.mem_hard }}
+      bytes) must stay BELOW pod.mem_limit ({{ _resolved_spec.pod.mem_limit }})
+      so Odoo self-recycles a worker before Kubernetes OOMKills the pod.

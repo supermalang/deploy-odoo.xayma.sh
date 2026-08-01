@@ -1,0 +1,63 @@
+---
+# Changes the tenant's custom domain (the default host always stays
+# attached) without disturbing its current running/suspended/stopped state
+# or pool assignment - both recovered from live state first, same technique
+# _recover-tenant.yml uses everywhere else. Adapted to the wildcard-cert
+# reality: only a CHANGE to custom_domain touches a Certificate at all (the
+# default host is always covered by the platform wildcard).
+- import_tasks: _recover-tenant.yml
+
+- name: "[{{ tenant_name }}] Resolve the platform's edge IP (via the default host)"
+  ansible.builtin.set_fact:
+    _edit_platform_ip: "{{ lookup('community.general.dig', default_domain) }}"
+  when: custom_domain | default('') | length > 0
+
+- name: "[{{ tenant_name }}] Resolve the requested custom domain"
+  ansible.builtin.set_fact:
+    _edit_custom_domain_ip: "{{ lookup('community.general.dig', custom_domain) }}"
+  when: custom_domain | default('') | length > 0
+
+- name: "[{{ tenant_name }}] Assert the custom domain points at this platform"
+  ansible.builtin.assert:
+    that: _edit_custom_domain_ip == _edit_platform_ip
+    fail_msg: >-
+      custom_domain ({{ custom_domain }}) resolves to
+      {{ _edit_custom_domain_ip }}, not this platform's edge IP
+      ({{ _edit_platform_ip }}, resolved via {{ default_domain }}). Point
+      its DNS record at the platform before retrying.
+  when: custom_domain | default('') | length > 0
+
+- name: "[{{ tenant_name }}] Apply the tenant's custom-domain Certificate"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: tenant-certificate.yaml.j2
+  when: custom_domain | default('') | length > 0
+
+- name: "[{{ tenant_name }}] Remove the custom-domain Certificate + IngressRoute + hostrewrite Middleware (custom_domain cleared)"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: absent
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ item.name }}"
+  loop:
+    - {api_version: cert-manager.io/v1, kind: Certificate, name: "{{ tenant_name }}-tls"}
+    - {api_version: traefik.io/v1alpha1, kind: IngressRoute, name: "{{ tenant_name }}-custom"}
+    - {api_version: traefik.io/v1alpha1, kind: Middleware, name: "{{ tenant_hostrewrite_mw_name }}"}
+  loop_control:
+    label: "{{ item.kind }}"
+  when: custom_domain | default('') | length == 0
+
+- name: "[{{ tenant_name }}] Reapply the IngressRoute for the new domain set ({{ tenant_state }})"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: tenant-ingressroute.yaml.j2
+  vars:
+    instance_state: "{{ tenant_state }}"
+    version: "{{ tenant_version }}"
+    plan: "{{ tenant_plan }}"

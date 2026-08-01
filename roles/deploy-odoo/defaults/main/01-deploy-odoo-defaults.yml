@@ -1,86 +1,232 @@
 ---
-# defaults file for deploy-odoo (k3s)
+# defaults file for deploy-odoo (k3s) - SHARED MULTI-TENANT POOL MODEL.
 #
-# Deploys per-customer Odoo instances as Kubernetes workloads: one namespace
-# per customer (xayma.sh/customer), holding a self-contained "slice" per
-# instance (Odoo Deployment, its OWN Postgres StatefulSet, ConfigMap/Secret,
-# filestore+addons PVCs, Service, IngressRoute+Certificate, NetworkPolicies).
+# Replaces the old per-slice model (one Deployment+StatefulSet per instance).
+# See README.md "Migrating from the slice model" for the full contract
+# diff. Architecture:
+#   - ONE namespace (`xayma_namespace`) for the whole tier - no more
+#     per-customer namespaces.
+#   - A tenant is a Postgres database + filestore directory + IngressRoute
+#     (+ Certificate only for custom_domain) - never a workload of its own.
+#   - Compute is organized in POOLS keyed by (version, plan); see
+#     00-plans.yml for the plan catalog and vars/main.yml for pool_id.
 #
-# This role is a STATELESS EXECUTOR: the Xayma app is the source of truth for
-# plans and launches the AWX job with flat `plan_*` extra_vars (see the
-# plan_* block below for the full list). No `plans:` dict lives here, and
-# nothing is looked up — every plan_* var is templated straight into the
-# rendered manifests, with the defaults below as its fallback. `xayma_odoo`
-# below is ONLY a survey fallback for manual CLI/AWX-UI runs; it is never
-# consulted when the app supplies customer/instancename/version/custom_domain
-# directly.
+# This role is still a STATELESS EXECUTOR for tenant identity: it derives
+# every secret deterministically from vault "seeds" (vars/main.yml) rather
+# than persisting anything per-tenant/per-pool. It is NO LONGER stateless
+# about SIZING - see 00-plans.yml's header comment for why the plan catalog
+# now lives in this role (a deliberate reversal of the old slice-model
+# doctrine, documented in the README).
 
 xayma_odoo:
   organization: "xayma"
   instancename: "sandbox"
   version: "19"
+  plan: "standard"
 
 # Role defaults are the LOWEST-precedence variable layer, so extra_vars from
-# the AWX job (or -e on the CLI) cleanly override these — no self-reference,
+# the AWX job (or -e on the CLI) cleanly override these - no self-reference,
 # unlike trying to do this in vars/main.yml (see that file's header comment).
 customer: "{{ xayma_odoo.organization }}"
 instancename: "{{ xayma_odoo.instancename }}"
 version: "{{ xayma_odoo.version }}"
+plan: "{{ xayma_odoo.plan }}"
 custom_domain: ""    # optional additional domain; blank = default host only
 
 # --- Platform-wide seam vars ---
 # Same contract as install-platform.xayma.sh's group_vars/all/main.yml, kept
-# as plain role defaults for now (this role is deployed from its own AWX job,
-# not the platform's site.yml). Clean seam to later replace these with a
-# kubernetes.core.k8s_info lookup against a platform-published ConfigMap
-# instead of hardcoding them here.
+# as plain role defaults for now (this role is deployed from its own AWX
+# job, not the platform's site.yml).
 kubeconfig_path: /etc/rancher/k3s/k3s.yaml
 cluster_issuer: letsencrypt-production
 platform_domain: xayma.net
 
-# --- Plan vars: sizing/scheduling for the Odoo/Postgres workloads ---
-# Flat (not a nested `plan` dict) so the Xayma app's extra_vars, the AWX
-# survey, and the templates all use the exact same var names with no
-# intermediate object/from_json step. Defaults here are conservative
-# single-worker sizing; the app overrides them per-instance via extra_vars.
-plan_workers: 0
-plan_db_maxconn: 16
-plan_mem_soft: 268435456          # 256Mi limit_memory_soft (bytes)
-plan_mem_hard: 402653184          # 384Mi limit_memory_hard (bytes) — keep BELOW plan_odoo_mem_limit so Odoo self-recycles before k8s OOMKills
-plan_max_cron_threads: 1
-plan_odoo_cpu_request: "100m"
-plan_odoo_mem_request: "256Mi"    # ~idle usage; this is what counts for density
-plan_odoo_cpu_limit: "1"
-plan_odoo_mem_limit: "768Mi"      # ceiling that survives the init spike — don't go below
-plan_pg_cpu_request: "50m"
-plan_pg_mem_request: "128Mi"
-plan_pg_cpu_limit: "500m"
-plan_pg_mem_limit: "512Mi"
-plan_filestore_storage: "1Gi"
-plan_pg_storage: "1Gi"
-plan_init_modules: "base"          # comma-separated, NO spaces, e.g. "base,my_module" — first-deploy `-i` list
+# A wildcard Certificate (*.{{ platform_domain }}) can ONLY be issued via
+# ACME DNS-01 - HTTP-01 (what `cluster_issuer` above is) cannot validate a
+# wildcard name at all, full stop, it's an ACME protocol limitation, not a
+# config choice. `letsencrypt-dns01-production` is the DNS-01-capable
+# ClusterIssuer added to install-platform.xayma.sh for exactly this - see
+# README.md "Migrating from the slice model". Left pointing at an HTTP-01
+# issuer, the wildcard Certificate k8s object applies fine but cert-manager
+# never actually issues it.
+wildcard_cluster_issuer: letsencrypt-dns01-production
+
+# ONE namespace for the entire tier (was one namespace per customer).
+xayma_namespace: xayma-odoo
+
+# Postgres topology seam - only 'shared' (one Postgres for the whole tier)
+# is implemented; 'per_version'/'per_pool' are reserved names so a future
+# change only has to teach vars/main.yml's `pg_target` a new branch, never
+# the task files (see tasks/_assert-plan.yml, which fails fast on anything
+# else today).
+pg_topology: shared
+
+# --- Plan resolution (see README "Plan resolution") ---
+# The Xayma app is the source of truth: real launches send `plan` (name) +
+# `plan_spec` (the full nested dict, same schema as defaults/main/00-plans.yml)
+# as extra_vars. `plan_spec_hard_fallback` is the LAST-resort layer - used
+# only when a manual/CLI run sets `plan` to a name that isn't even in the
+# 00-plans.yml catalog and sends no plan_spec/plan_spec_json either. It is
+# deliberately conservative (this is a safety net, not a real tier).
+#
+# This whole model replaces the old flat `plan_*` extra_vars contract - that
+# doctrine existed to keep AWX surveys simple (flat fields only); the app
+# now sends `plan_spec` as a real nested JSON value over the AWX API
+# directly, so there is no longer a reason to flatten it. The ONE manual-run
+# survey field that remains is `plan_spec_json` (a JSON string, parsed by
+# tasks/_resolve-plan-spec.yml) - see README "AWX".
+plan_spec_hard_fallback:
+  workers: 2
+  replicas_min: 1
+  replicas_max: 2
+  pod:
+    cpu_request: "150m"
+    cpu_limit: "1"
+    mem_request: "384Mi"
+    mem_limit: "768Mi"
+  limits:
+    mem_soft: 402653184         # 384Mi - keep BELOW pod.mem_limit above
+    mem_hard: 536870912         # 512Mi - keep BELOW pod.mem_limit above
+    time_cpu: 120
+    time_real: 300
+    request: 8196
+  cron:
+    threads: 1
+  db_maxconn: 5
+  init_modules: "base"
+  tenant_db_max_connections: 5
+  ratelimit:
+    avg: 5
+    burst: 15
 
 # --- Role-owned, non-plan defaults ---
 odoo:
-  # Addons PVC is populated out-of-band (ops/CI, not this role) and isn't
-  # part of the plan_* vars, so it gets a fixed starting size here.
-  default_addons_storage: 5Gi
   storage_class: local-path
 
-  # Platform MinIO (internal, restore source) — same values as
-  # install-platform.xayma.sh's deploy-databases/deploy-platform-storage,
-  # re-declared here since roles in that platform are self-contained
-  # copy-paste consumers of well-known values rather than cross-role
-  # variable references.
+  # Namespace-wide singleton PVCs (was per-instance) - sized generously since
+  # every tenant now shares them; resizing is a manual PVC edit (local-path's
+  # online-expansion support depends on the underlying filesystem - verify
+  # before relying on it).
+  filestore_storage: 50Gi
+  addons_storage: 5Gi
+
+  # Platform MinIO (internal, snapshot target for backup/restore) - same
+  # values as install-platform.xayma.sh's deploy-databases/deploy-platform-storage.
   storage_namespace: xayma-storage
   snapshot_bucket: snapshots
   snapshot_endpoint: "http://minio.xayma-storage.svc:9000"
   snapshot_access_key: "{{ vault_odoo_minio_access_key }}"
   snapshot_secret_key: "{{ vault_odoo_minio_secret_key }}"
 
-# All component versions pinned explicitly — never `latest`.
+  # odoo_action=sync-addons (git pull onto the addons PVC). No default repo
+  # URL on purpose: it must be supplied per-run (-e addons_repo_url=...)
+  # since it is credential-adjacent - see tasks/sync-addons.yml.
+  addons_repo_ref: main
+
+# Shared Postgres sizing (ONE StatefulSet for the whole tier - not a plan_*
+# concern; see pg_topology above).
+postgres:
+  storage: 20Gi
+  cpu_request: "500m"
+  cpu_limit: "4"
+  mem_request: "1Gi"
+  mem_limit: "4Gi"
+  max_connections: 200
+  # Node-pinned DELIBERATELY (its PVC is local-path, single-node today) -
+  # see README "Before adding node 2". Empty = scheduler's free choice on a
+  # single-node cluster; set nodeSelector/affinity once a real node name is
+  # known and node count > 1 is on the table.
+  node_selector: {}
+
+# PgBouncer (transaction-mode pooling in front of the shared Postgres).
+pgbouncer:
+  default_pool_size: 5
+  max_client_conn: 2000
+  cpu_request: "50m"
+  cpu_limit: "500m"
+  mem_request: "64Mi"
+  mem_limit: "256Mi"
+
+# Redis (mandatory Odoo session backend - no filesystem fallback). Verified
+# against camptocamp/odoo-cloud-platform's session_redis addon, 19.0 branch
+# (session.py/http.py) - it is configured ENTIRELY via ODOO_SESSION_REDIS_*
+# environment variables on the odoo process (NOT odoo.conf keys - see
+# pool-deployments.yaml.j2/job-init.yaml.j2/job-fixup.yaml.j2), and its
+# session key prefix is set ONCE per pool (ODOO_SESSION_REDIS_PREFIX -
+# there is no per-tenant/per-database segment in the Redis key at all,
+# only in the stored session VALUE's `db` field) - see README "Known
+# caveats" for why session purge has to filter by that field, not scan a
+# tenant-specific key pattern.
+redis:
+  storage: 1Gi
+  cpu_request: "50m"
+  cpu_limit: "500m"
+  mem_request: "64Mi"
+  mem_limit: "256Mi"
+  maxmemory: "192mb"
+  maxmemory_policy: "allkeys-lru"
+
+# The stock Docker Hub `odoo` image does NOT include the `redis` Python
+# package that session_redis's http.py needs (`import redis`) - without it,
+# the FIRST session access on any pool pod hits an AttributeError (the
+# module catches the ImportError and continues with `redis = None`, then
+# crashes on first real use, not at startup). `odoo_image_repo` must point
+# at a registry repo (e.g. "yourdockerhubuser/xayma-odoo") that carries a
+# `{version}.0`-tagged image built from files/odoo-image/Dockerfile (which
+# layers `pip install redis` onto the stock image) - see
+# tasks/_ensure-odoo-image.yml + odoo_image_build below for how that tag
+# gets there automatically, and README "Requirements"/"Custom Odoo image".
+odoo_image_repo: supermalang/xayma-odoo
+
+# Automatic build+push of `{{ odoo_image_repo }}:{{ version }}.0` when it
+# doesn't already exist in the registry (tasks/_ensure-odoo-image.yml,
+# called from _resolve-pool.yml on every deploy/change-plan/apply-plan).
+# Builds via `nerdctl` against k3s's OWN embedded containerd
+# (`k3s_containerd_socket` below) - DELIBERATELY not a separate Docker
+# daemon, since k3s already ships a container runtime and nerdctl is
+# Docker-CLI-compatible against it directly. Needs `vault_odoo_dockerhub_username`/
+# `vault_odoo_dockerhub_token` (an access token, not the account password)
+# in the vault, and nerdctl-full installed on whatever host runs this
+# playbook - see README "Requirements"/"Custom Odoo image". When disabled
+# and the tag is missing, _ensure-odoo-image.yml fails fast with a clear
+# message rather than letting every pool pod in a brand-new pool
+# crash-loop on a missing/wrong image.
+odoo_image_build:
+  enabled: true
+
+# k3s's embedded containerd - NOT the default `/run/containerd/containerd.sock`
+# a standalone containerd/Docker install would use. `nerdctl_namespace` is
+# the containerd namespace k3s's own kubelet/containerd use for every pod
+# image - matching it here is just convention (harmless either way once
+# the image is actually pushed to the registry, since kubelet pulls it
+# fresh from there independently of this build).
+k3s_containerd_socket: /run/k3s/containerd/containerd.sock
+nerdctl_namespace: k8s.io
+
+# Namespace ResourceQuota - a guardrail against Job pileups (batch-low Jobs
+# are the main risk: init/fixup/restore/backup/sync-addons all land here).
+resourcequota:
+  pods: "200"
+  requests_cpu: "16"
+  requests_memory: "32Gi"
+  limits_cpu: "32"
+  limits_memory: "64Gi"
+
+# PriorityClass for every Job this role creates (init/fixup/restore/backup/
+# sync-addons) - negative so they never preempt pool workloads, and
+# preemptionPolicy Never so a pending batch-low Job never preempts anything
+# else while it waits either.
+priorityclass:
+  name: batch-low
+  value: -100
+
+# All component versions pinned explicitly - never `latest`.
 versions:
-  odoo: "19"                 # survey fallback only; real deploys pass `version` explicitly
-  postgres: "16.6-bookworm"   # per-instance dedicated Postgres (no AWX-style PG15 pin needed here)
-  busybox: "1.38.0"           # suspend/stop backend + config-merge initContainer
-  rclone: "1.74.3"            # restore Job -> platform MinIO
+  odoo: "19"                     # survey fallback only; real deploys pass `version` explicitly
+  postgres: "16.6-bookworm"       # ONE shared StatefulSet for the tier (see pg_topology)
+  pgbouncer: "1.23.1-p2"          # edoburu/pgbouncer
+  redis: "7.4.1-alpine3.20"
+  postgres_exporter: "v0.16.0"    # quay.io/prometheuscommunity/postgres-exporter
+  busybox: "1.38.0"               # suspend-backend + config-merge initContainers
+  rclone: "1.74.3"                # restore/backup Jobs -> platform MinIO
+  git: "2.47.1"                   # sync-addons Job

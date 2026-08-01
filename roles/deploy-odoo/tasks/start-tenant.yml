@@ -1,0 +1,5 @@
+---
+- name: Start the tenant (GRANT DB access back, repoint IngressRoute at its pool)
+  ansible.builtin.include_tasks: _set-tenant-state.yml
+  vars:
+    _state_target: running

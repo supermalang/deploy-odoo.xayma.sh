@@ -1,0 +1,36 @@
+#jinja2: lstrip_blocks: True
+---
+# Generic one-off filesystem operation against the shared filestore/addons
+# PVCs - delete-tenant.yml's directory cleanup, _assert-init-modules.yml's
+# existence check. Mounted READ-WRITE (unlike every other consumer, which
+# mounts addons read-only) since some callers need to write. Required vars:
+# `_fileops_name` (Job name), `_fileops_command` (a shell -c string).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "{{ _fileops_name }}"
+  namespace: {{ xayma_namespace }}
+  labels: {{ tenant_labels | combine({'xayma.sh/job-role': 'fileops'}) | to_json }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {{ tenant_labels | combine({'xayma.sh/job-role': 'fileops'}) | to_json }}
+    spec:
+      restartPolicy: Never
+      priorityClassName: {{ priorityclass.name }}
+      containers:
+        - name: fileops
+          image: busybox:{{ versions.busybox }}
+          command: ["sh", "-c", {{ _fileops_command | to_json }}]
+          volumeMounts:
+            - {name: filestore, mountPath: /filestore}
+            - {name: addons, mountPath: /addons}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+      volumes:
+        - {name: filestore, persistentVolumeClaim: {claimName: odoo-filestore}}
+        - {name: addons, persistentVolumeClaim: {claimName: odoo-addons}}

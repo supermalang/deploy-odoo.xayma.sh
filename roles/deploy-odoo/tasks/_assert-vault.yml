@@ -1,0 +1,17 @@
+---
+# Runs for every tenant-scoped action (see main.yml). This role is a
+# stateless executor: it derives every secret deterministically from a
+# handful of vault "seeds" (vars/main.yml) rather than persisting anything
+# per-tenant/per-pool/per-platform-singleton.
+- name: Assert this role's own vault secrets are set
+  ansible.builtin.assert:
+    that:
+      - vault_odoo_db_password | default('') | length > 0
+      - vault_odoo_admin_password | default('') | length > 0
+      - vault_odoo_platform_password | default('') | length > 0
+      - vault_odoo_minio_access_key | default('') | length > 0
+      - vault_odoo_minio_secret_key | default('') | length > 0
+    fail_msg: >-
+      One or more vault_odoo_* secrets are unset. Copy
+      defaults/main/02-credentials.yml.example, fill it in, and encrypt it
+      with ansible-vault as defaults/main/02-credentials.yml.

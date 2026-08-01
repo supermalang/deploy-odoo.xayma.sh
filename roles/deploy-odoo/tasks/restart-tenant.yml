@@ -1,0 +1,25 @@
+---
+# REDEFINED for the pool model - there is no per-tenant process to restart
+# anymore (Odoo runs as shared pool Deployments serving many tenants; the
+# calling app must NOT expect a pod restart here, since that would disrupt
+# every OTHER tenant on the same pool). See README "Known caveats" for the
+# full semantic-change note the calling app needs to read.
+#
+# What actually happens: drop this one tenant's live DB connections and its
+# Redis sessions, forcing its next request to open a fresh backend
+# connection and log in again - the closest equivalent to "restart" that is
+# safe in a shared-pool architecture.
+- import_tasks: _recover-tenant.yml
+- import_tasks: _pg-connection.yml
+
+- name: "[{{ tenant_name }}] Terminate any live backends on this tenant's database"
+  community.postgresql.postgresql_query:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    db: postgres
+    query: "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %(dbname)s"
+    named_args:
+      dbname: "{{ instance_slug }}"
+
+- import_tasks: _purge-tenant-redis-sessions.yml

@@ -1,0 +1,138 @@
+---
+# include_tasks helper - called from _resolve-pool.yml on every
+# deploy/change-plan/apply-plan. Checks whether
+# `{{ odoo_image_repo }}:{{ version }}.0` already exists in the registry;
+# if not AND `odoo_image_build.enabled` is true, builds it from
+# files/odoo-image/Dockerfile (layers the `redis` Python package onto the
+# stock Odoo image - see README "Known caveats") and pushes it. If it's
+# missing and building is disabled, fails fast - better than letting every
+# pod in a brand-new pool crash-loop on a missing/wrong image.
+#
+# Uses `nerdctl` against k3s's OWN EMBEDDED containerd
+# (`k3s_containerd_socket`) - DELIBERATELY not a separate Docker daemon.
+# k3s ships containerd already; nerdctl is a Docker-CLI-compatible tool
+# that talks to it directly, so there is no second container runtime to
+# install/maintain on the node. Requires the "nerdctl-full" release
+# (https://github.com/containerd/nerdctl/releases) specifically, not the
+# bare binary - plain nerdctl doesn't bundle buildkitd, which `nerdctl
+# build` needs.
+#
+# The registry check itself is unrelated to any of that - it uses Docker
+# Hub's REST API directly (not a local image cache, which can't tell you
+# whether a tag was ever actually PUSHED). Works anonymously for public
+# repos; supplies a JWT (via the same Hub API login endpoint) when
+# vault_odoo_dockerhub_username is set, for private repos.
+
+- name: "[{{ odoo_image_repo }}:{{ version }}.0] Authenticate to the Docker Hub API (private-repo tag check)"
+  ansible.builtin.uri:
+    url: "https://hub.docker.com/v2/users/login/"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ vault_odoo_dockerhub_username }}"
+      password: "{{ vault_odoo_dockerhub_token }}"
+    status_code: [200, 401]
+  register: _dockerhub_login
+  no_log: true
+  when: vault_odoo_dockerhub_username | default('') | length > 0
+
+- name: "[{{ odoo_image_repo }}:{{ version }}.0] Set the Docker Hub JWT fact"
+  ansible.builtin.set_fact:
+    _dockerhub_jwt: "{{ _dockerhub_login.json.token | default('') }}"
+  no_log: true
+  when: vault_odoo_dockerhub_username | default('') | length > 0
+
+- name: "[{{ odoo_image_repo }}:{{ version }}.0] Check whether the tag already exists in the registry"
+  ansible.builtin.uri:
+    url: "https://hub.docker.com/v2/repositories/{{ odoo_image_repo }}/tags/{{ version }}.0/"
+    status_code: [200, 401, 404]
+    headers: >-
+      {{ {'Authorization': 'JWT ' ~ _dockerhub_jwt} if (_dockerhub_jwt | default('') | length > 0) else {} }}
+  register: _odoo_image_check
+  failed_when: false
+
+- name: "[{{ odoo_image_repo }}:{{ version }}.0] Assert automatic build is enabled, or the tag already exists"
+  ansible.builtin.assert:
+    that: (_odoo_image_check.status | default(0)) == 200 or (odoo_image_build.enabled | bool)
+    fail_msg: >-
+      {{ odoo_image_repo }}:{{ version }}.0 does not exist in the registry
+      (HTTP {{ _odoo_image_check.status | default('?') }}) and
+      odoo_image_build.enabled is false - either push it manually (see
+      README "Custom Odoo image") or set odoo_image_build.enabled: true
+      (and vault_odoo_dockerhub_username/vault_odoo_dockerhub_token) once
+      nerdctl-full is installed on this host.
+
+- name: "[{{ odoo_image_repo }}:{{ version }}.0] Build + push the missing tag via nerdctl"
+  when: (_odoo_image_check.status | default(0)) != 200
+  block:
+    - name: "Assert Docker Hub credentials are set before attempting a build"
+      ansible.builtin.assert:
+        that:
+          - vault_odoo_dockerhub_username | default('') | length > 0
+          - vault_odoo_dockerhub_token | default('') | length > 0
+        fail_msg: >-
+          odoo_image_build.enabled is true and
+          {{ odoo_image_repo }}:{{ version }}.0 is missing from the
+          registry, but vault_odoo_dockerhub_username/vault_odoo_dockerhub_token
+          are unset - add them to defaults/main/02-credentials.yml (see
+          .example) before retrying.
+
+    - name: "Check whether nerdctl is installed on this host"
+      ansible.builtin.command:
+        argv: ["nerdctl", "--version"]
+      register: _nerdctl_check
+      failed_when: false
+      changed_when: false
+
+    - name: "Assert nerdctl is available before attempting a build"
+      ansible.builtin.assert:
+        that: (_nerdctl_check.rc | default(1)) == 0
+        fail_msg: >-
+          nerdctl is not installed/on PATH on this host, but
+          odoo_image_build.enabled is true and
+          {{ odoo_image_repo }}:{{ version }}.0 is missing from the
+          registry. Install nerdctl-full
+          (https://github.com/containerd/nerdctl/releases - the full
+          bundle, not the bare binary, so buildkitd is included) on the
+          k3s node before retrying.
+
+    - name: "Log in to the registry via nerdctl"
+      ansible.builtin.command:
+        argv:
+          - nerdctl
+          - login
+          - --username
+          - "{{ vault_odoo_dockerhub_username }}"
+          - --password-stdin
+        stdin: "{{ vault_odoo_dockerhub_token }}"
+      no_log: true
+      changed_when: false
+
+    - name: "Build {{ odoo_image_repo }}:{{ version }}.0 via nerdctl (k3s's embedded containerd)"
+      ansible.builtin.command:
+        argv:
+          - nerdctl
+          - --address
+          - "{{ k3s_containerd_socket }}"
+          - --namespace
+          - "{{ nerdctl_namespace }}"
+          - build
+          - --build-arg
+          - "ODOO_VERSION={{ version }}"
+          - --pull
+          - -t
+          - "{{ odoo_image_repo }}:{{ version }}.0"
+          - "{{ role_path }}/files/odoo-image"
+      changed_when: true
+
+    - name: "Push {{ odoo_image_repo }}:{{ version }}.0"
+      ansible.builtin.command:
+        argv:
+          - nerdctl
+          - --address
+          - "{{ k3s_containerd_socket }}"
+          - --namespace
+          - "{{ nerdctl_namespace }}"
+          - push
+          - "{{ odoo_image_repo }}:{{ version }}.0"
+      changed_when: true

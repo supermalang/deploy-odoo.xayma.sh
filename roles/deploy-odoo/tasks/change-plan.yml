@@ -1,0 +1,98 @@
+---
+# Moves a tenant to a different plan on the SAME Odoo version (assert
+# below; a version change is a stub - see change-version.yml). `plan` is
+# the NEW target plan name (extra_var, slug-validated by _assert-plan.yml
+# in main.yml); `plan_spec`/`plan_spec_json` (optional) is the NEW target's
+# spec, resolved with the same precedence as deploy (see README "Plan
+# resolution"). No data movement: the tenant's database/filestore directory
+# are untouched, only which pool serves them (and its cap/ratelimit) changes.
+- import_tasks: _recover-tenant.yml
+
+- name: "[{{ tenant_name }}] Log the pool move"
+  ansible.builtin.debug:
+    msg: >-
+      Moving {{ tenant_name }} from plan={{ tenant_plan }} to plan={{ plan }}
+      on odoo{{ tenant_version }} ({{ tenant_pool_id }} -> odoo{{ tenant_version }}-{{ plan }}).
+      version is never taken as input for change-plan - a cross-version
+      move is odoo_action=change-version, which is out of scope (see
+      README "Non-goals").
+
+# Resolve the TARGET plan_spec + ensure the TARGET pool exists (create-only
+# semantics apply - see _resolve-pool.yml). `version` is forced to the
+# tenant's CURRENT (unchanged) version for both imports below.
+- import_tasks: _resolve-plan-spec.yml
+  vars:
+    version: "{{ tenant_version }}"
+- import_tasks: _resolve-pool.yml
+  vars:
+    version: "{{ tenant_version }}"
+
+- name: "[{{ tenant_name }}] REVOKE the old pool role's CONNECT on this tenant's database"
+  community.postgresql.postgresql_privs:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    database: postgres
+    type: database
+    objs: "{{ instance_slug }}"
+    privs: CONNECT
+    roles: "{{ tenant_pg_role }}"
+    state: absent
+
+- name: "[{{ tenant_name }}] GRANT the new pool role's CONNECT on this tenant's database"
+  community.postgresql.postgresql_privs:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    database: postgres
+    type: database
+    objs: "{{ instance_slug }}"
+    privs: CONNECT
+    roles: "pool_{{ tenant_version }}_{{ plan }}"
+    state: present
+
+- name: "[{{ tenant_name }}] Update this tenant's PgBouncer per-db entry to the new plan's cap"
+  ansible.builtin.include_tasks: _sync-pgbouncer-tenants.yml
+  vars:
+    _pgb_override_slug: "{{ instance_slug }}"
+    _pgb_override_cap: "{{ tenant_spec.tenant_db_max_connections }}"
+
+- name: "[{{ tenant_name }}] Patch the ratelimit Middleware + IngressRoute to the new pool/spec"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: tenant-ingressroute.yaml.j2
+  vars:
+    instance_state: "{{ tenant_state }}"
+    version: "{{ tenant_version }}"
+    custom_domain: "{{ tenant_custom_domain }}"
+    # `plan` is already the new target plan from extra_vars - not overridden here.
+
+# If the OLD pool just lost its last tenant, scale it to 0 (never delete its
+# objects) - same rule delete-tenant.yml applies.
+- name: "[{{ tenant_name }}] Count remaining tenants on the old pool ({{ tenant_pool_id }})"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: IngressRoute
+    api_version: traefik.io/v1alpha1
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "xayma.sh/pool-id={{ tenant_pool_id }}"
+  register: _changeplan_old_pool_tenants
+
+- name: "[{{ tenant_name }}] Scale the old pool ({{ tenant_pool_id }}) to 0 (no tenants remain)"
+  kubernetes.core.k8s_scale:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ item }}"
+    replicas: 0
+    wait: false
+  loop:
+    - "{{ tenant_pool_id }}-http"
+    - "{{ tenant_pool_id }}-cron"
+    - "{{ tenant_pool_id }}-gevent"
+  loop_control:
+    label: "{{ item }}"
+  when: _changeplan_old_pool_tenants.resources | length == 0

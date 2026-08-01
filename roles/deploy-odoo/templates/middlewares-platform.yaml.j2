@@ -1,0 +1,61 @@
+#jinja2: lstrip_blocks: True
+---
+# Created ONCE for the whole namespace - every tenant's IngressRoute
+# references these by fixed name (see tenant-ingressroute.yaml.j2). Traefik's
+# `errors` middleware takes exactly one status range + one static query path
+# per object, so "mw-errors" (singular, per the architecture) is realized as
+# TWO k8s objects (404 vs 500-599) so each bucket keeps its own styled page -
+# tenant IngressRoutes attach both together wherever "mw-errors" is meant.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: mw-errors-404
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  errors:
+    status: ["404"]
+    service:
+      name: {{ suspend_backend_name }}
+      port: 80
+    query: /404.html
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: mw-errors-50x
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  errors:
+    status: ["500-599"]
+    service:
+      name: {{ suspend_backend_name }}
+      port: 80
+    query: /50x.html
+---
+# Suspended/stopped state: the tenant's IngressRoute points straight at
+# suspend-backend and one of these rewrites the request path server-side
+# (no client-visible redirect / URL change) so any path serves the right
+# static page with 200.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: mw-suspended
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  replacePathRegex:
+    regex: ^.*$
+    replacement: /suspended.html
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: mw-stopped
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  replacePathRegex:
+    regex: ^.*$
+    replacement: /stopped.html

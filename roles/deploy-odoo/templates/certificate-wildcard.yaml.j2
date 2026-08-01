@@ -1,0 +1,19 @@
+#jinja2: lstrip_blocks: True
+---
+# Covers every tenant's default host (*.{{ platform_domain }}) in ONE
+# Certificate - a per-tenant Certificate is only created for custom_domain
+# (see tenant-certificate.yaml.j2). REQUIRES a DNS-01-capable ClusterIssuer
+# (`wildcard_cluster_issuer`) - see that default's comment + README.md.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-tls
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  secretName: wildcard-tls
+  dnsNames:
+    - "*.{{ platform_domain }}"
+  issuerRef:
+    name: "{{ wildcard_cluster_issuer }}"
+    kind: ClusterIssuer

@@ -1,0 +1,70 @@
+---
+# include_tasks helper - resolves the EFFECTIVE plan_spec for `plan` (a
+# name), honoring precedence (see README "Plan resolution"):
+#   plan_spec (app-supplied extra_var, or plan_spec_json for manual/survey
+#   runs) > plans[plan] (defaults/main/00-plans.yml catalog) >
+#   plan_spec_hard_fallback (defaults/main/01-deploy-odoo-defaults.yml)
+#
+# The app is the source of truth in normal operation - the catalog/fallback
+# only matter for manual CLI/AWX-survey runs that don't send plan_spec.
+#
+# Sets: pool_spec (frozen-after-creation subset - see _resolve-pool.yml's
+# create-only semantics), tenant_spec (always-honored subset), pool_spec_hash.
+
+- name: Assert a plan name was provided
+  ansible.builtin.assert:
+    that: plan is defined and plan | length > 0
+    fail_msg: "Set -e plan=<name> (the plan NAME, not the spec - see README 'Plan resolution')."
+
+- name: Parse plan_spec_json (manual/survey fallback) if plan_spec itself wasn't sent
+  ansible.builtin.set_fact:
+    plan_spec: "{{ plan_spec_json | from_json }}"
+  when: plan_spec is not defined and plan_spec_json is defined and plan_spec_json | length > 0
+
+- name: Merge plan_spec precedence layers (hard fallback -> catalog -> app-supplied)
+  ansible.builtin.set_fact:
+    _resolved_spec: >-
+      {{ plan_spec_hard_fallback
+         | combine(plans[plan] | default({}), recursive=True)
+         | combine(plan_spec | default({}), recursive=True) }}
+
+- import_tasks: _assert-plan-spec.yml
+
+- name: Split the resolved spec into pool-scoped and tenant-scoped facts
+  ansible.builtin.set_fact:
+    pool_spec:
+      workers: "{{ _resolved_spec.workers }}"
+      replicas_min: "{{ _resolved_spec.replicas_min }}"
+      replicas_max: "{{ _resolved_spec.replicas_max }}"
+      pod: "{{ _resolved_spec.pod }}"
+      limits: "{{ _resolved_spec.limits }}"
+      cron: "{{ _resolved_spec.cron }}"
+      db_maxconn: "{{ _resolved_spec.db_maxconn }}"
+    tenant_spec:
+      init_modules: "{{ _resolved_spec.init_modules }}"
+      tenant_db_max_connections: "{{ _resolved_spec.tenant_db_max_connections }}"
+      ratelimit: "{{ _resolved_spec.ratelimit }}"
+
+# Manually flattened to a fixed-order string rather than `pool_spec | to_json
+# | hash(...)` - dict key order from a `combine()` chain isn't guaranteed
+# stable across Ansible/Python versions, and this hash MUST be reproducible
+# run-over-run for create-only pool semantics to work at all.
+- name: Compute the pool-scoped spec's deterministic hash (create-only pool semantics)
+  ansible.builtin.set_fact:
+    pool_spec_hash: >-
+      {{ (
+        'workers=' ~ pool_spec.workers
+        ~ '|replicas_min=' ~ pool_spec.replicas_min
+        ~ '|replicas_max=' ~ pool_spec.replicas_max
+        ~ '|pod_cpu_request=' ~ pool_spec.pod.cpu_request
+        ~ '|pod_cpu_limit=' ~ pool_spec.pod.cpu_limit
+        ~ '|pod_mem_request=' ~ pool_spec.pod.mem_request
+        ~ '|pod_mem_limit=' ~ pool_spec.pod.mem_limit
+        ~ '|mem_soft=' ~ pool_spec.limits.mem_soft
+        ~ '|mem_hard=' ~ pool_spec.limits.mem_hard
+        ~ '|time_cpu=' ~ pool_spec.limits.time_cpu
+        ~ '|time_real=' ~ pool_spec.limits.time_real
+        ~ '|request=' ~ pool_spec.limits.request
+        ~ '|cron_threads=' ~ pool_spec.cron.threads
+        ~ '|db_maxconn=' ~ pool_spec.db_maxconn
+      ) | hash('sha256') }}

@@ -1,0 +1,239 @@
+---
+# Idempotent bootstrap of the whole `xayma-odoo` tier - run on EVERY
+# odoo_action=deploy (see main.yml), near-no-op after the first tenant ever
+# deployed. Nothing here is tenant- or pool-specific: this is the shared
+# infrastructure every pool and every tenant sits on top of (namespace,
+# Postgres, PgBouncer, Redis, suspend-backend, wildcard TLS, NetworkPolicies,
+# observability). odoo_action=change-plan/apply-plan do NOT run this (a pool
+# move/resize never needs new platform infrastructure) - only _resolve-pool.yml.
+
+- name: Create/update the xayma-odoo namespace + ResourceQuota
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    template: namespace.yaml.j2
+
+- name: Create/update the batch-low PriorityClass (cluster-scoped)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    template: priorityclass.yaml.j2
+
+- name: Apply the shared Postgres (Secret + Service + StatefulSet)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: pg-statefulset.yaml.j2
+  no_log: true
+
+- name: Wait for the shared Postgres pod to be Ready
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Pod
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ pg_pod_name }}"
+  register: _platform_pg_pod
+  until: >-
+    _platform_pg_pod.resources | length > 0 and
+    _platform_pg_pod.resources[0].status.containerStatuses | default([])
+    | selectattr('ready', 'equalto', true) | list | length > 0
+  retries: 60
+  delay: 5
+
+- import_tasks: _pg-connection.yml
+
+# Fixed, once-ever platform PG roles - community.postgresql connects
+# DIRECTLY to the shared Postgres from the control node (see
+# requirements.yml + _pg-connection.yml for why this is expected to work).
+# pgadmin_ro/backup_ro: read-only, survive tenant suspension (their DB-level
+# grants toggle independently of the pool role - see _set-tenant-state.yml).
+# pgbouncer_auth: a lookup-only role used solely as PgBouncer's `auth_user`
+# (see templates/pgbouncer.yaml.j2's auth_query) - never granted data access.
+# pg_exporter: `pg_monitor`, a distinct least-privilege scope from
+# pgadmin_ro's `pg_read_all_data`.
+- name: Ensure the fixed platform PG roles exist
+  community.postgresql.postgresql_user:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    db: postgres
+    name: "{{ item.name }}"
+    password: "{{ item.password }}"
+    role_attr_flags: LOGIN
+  loop:
+    - {name: "{{ pgadmin_ro_role }}", password: "{{ _pgadmin_ro_password }}"}
+    - {name: "{{ backup_ro_role }}", password: "{{ _backup_ro_password }}"}
+    - {name: "{{ pgbouncer_auth_role }}", password: "{{ _pgbouncer_auth_password }}"}
+    - {name: "{{ pg_exporter_role }}", password: "{{ _pg_exporter_password }}"}
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Grant the fixed platform roles their scoped privileges
+  community.postgresql.postgresql_membership:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    db: postgres
+    group: "{{ item.group }}"
+    target_role: "{{ item.role }}"
+    state: present
+  loop:
+    - {role: "{{ pgadmin_ro_role }}", group: pg_read_all_data}
+    - {role: "{{ backup_ro_role }}", group: pg_read_all_data}
+    - {role: "{{ pg_exporter_role }}", group: pg_monitor}
+  loop_control:
+    label: "{{ item.role }}"
+
+# Standard "auth_query" recipe: pg_shadow is superuser-only, so PgBouncer's
+# auth_user goes through a SECURITY DEFINER wrapper function instead of a
+# static userlist (no userlist edits when pool roles are created/rotated).
+- name: Ensure the pgbouncer auth_query lookup function exists
+  community.postgresql.postgresql_query:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    db: postgres
+    query: >
+      CREATE OR REPLACE FUNCTION public.pgbouncer_auth_lookup(uname text)
+      RETURNS TABLE(usename name, passwd text) AS $$ SELECT usename, passwd
+      FROM pg_shadow WHERE usename = uname; $$ LANGUAGE sql SECURITY DEFINER
+
+- name: Lock the lookup function down, then grant it to pgbouncer_auth only
+  community.postgresql.postgresql_query:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    db: postgres
+    query: "REVOKE ALL ON FUNCTION public.pgbouncer_auth_lookup(text) FROM PUBLIC"
+
+- name: Grant EXECUTE on the lookup function to pgbouncer_auth
+  community.postgresql.postgresql_privs:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    db: postgres
+    type: function
+    objs: "pgbouncer_auth_lookup(text)"
+    privs: EXECUTE
+    role: "{{ pgbouncer_auth_role }}"
+
+# The tenants.ini ConfigMap is normally OWNED by tasks/_sync-pgbouncer-tenants.yml
+# (a full desired-state regeneration from live IngressRoutes) - seeded here
+# ONLY if totally absent (first-ever bootstrap), so PgBouncer's `%include`
+# has something to mount before any tenant has ever been deployed. Never
+# touched again after that first creation - re-seeding it empty on every
+# deploy would erase every tenant's live cap.
+- name: Check whether the pgbouncer-tenants ConfigMap already exists
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ pgbouncer_tenants_configmap_name }}"
+  register: _platform_pgb_tenants_cm
+
+- name: Seed an empty pgbouncer-tenants ConfigMap (first bootstrap only)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ pgbouncer_tenants_configmap_name }}"
+        namespace: "{{ xayma_namespace }}"
+        labels: "{{ platform_base_labels | combine({'app.kubernetes.io/name': 'pgbouncer'}) }}"
+      data:
+        tenants.ini: "# Regenerated by tasks/_sync-pgbouncer-tenants.yml - do not edit by hand.\n"
+  when: _platform_pgb_tenants_cm.resources | length == 0
+
+- name: Apply PgBouncer (ConfigMap + Secret + Service + StatefulSet)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: pgbouncer.yaml.j2
+  no_log: true
+
+- name: Apply Redis (Secret + StatefulSet + Service)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: redis.yaml.j2
+  no_log: true
+
+- name: Apply postgres-exporter (Secret + Deployment + Service)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: postgres-exporter.yaml.j2
+  no_log: true
+
+- name: Apply the platform MinIO credentials Secret
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: minio-secret.yaml.j2
+  no_log: true
+
+- name: Apply the shared filestore + addons PVCs
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: pvcs.yaml.j2
+
+# Shared, namespace-wide suspend/stop/error backend (was per-customer in the
+# slice model - one namespace now, so one backend). The ConfigMap's data
+# comes from files/*.html via the `file` lookup (Jinja's template-include
+# directive can't reach the role's files/ dir), so it's applied inline here
+# with `definition:`, same technique as install-platform.xayma.sh's
+# deploy-error-pages role.
+- name: Apply the suspend-backend HTML ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ suspend_backend_name }}-html"
+        namespace: "{{ xayma_namespace }}"
+        labels: "{{ platform_base_labels | combine({'app.kubernetes.io/name': 'suspend-backend'}) }}"
+      data:
+        suspended.html: "{{ lookup('file', role_path + '/files/suspended.html') }}"
+        stopped.html: "{{ lookup('file', role_path + '/files/stopped.html') }}"
+        404.html: "{{ lookup('file', role_path + '/files/404.html') }}"
+        50x.html: "{{ lookup('file', role_path + '/files/50x.html') }}"
+
+- name: Apply the suspend-backend Deployment + Service
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: suspend-backend.yaml.j2
+
+- name: Apply the platform-wide Middlewares (suspended/stopped/errors)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: middlewares-platform.yaml.j2
+
+- name: Apply the wildcard TLS Certificate
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: certificate-wildcard.yaml.j2
+
+- name: Apply the platform-wide NetworkPolicies
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: networkpolicies-platform.yaml.j2

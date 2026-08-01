@@ -1,0 +1,67 @@
+---
+# include_tasks target shared by start/stop/suspend-tenant.yml. Required
+# param: `_state_target` (running|suspended|stopped).
+#
+# Deactivating (suspended/stopped) is "identical mechanics" per the target
+# architecture: REVOKE the tenant's db CONNECT grant from its pool role,
+# terminate any live backends on that db, purge the tenant's Redis
+# sessions, then repoint the IngressRoute at the shared suspend-backend.
+# Activating (running) is the inverse: GRANT CONNECT back, then repoint the
+# IngressRoute at the tenant's pool. Nothing here touches the POOL's own
+# Deployments/replicas - pools are shared, so a single tenant's state never
+# scales anything (that only happens tenant-count-reaches-zero in
+# delete-tenant.yml).
+- import_tasks: _recover-tenant.yml
+- import_tasks: _pg-connection.yml
+
+- name: "[{{ tenant_name }}] REVOKE the pool role's CONNECT on this tenant's database"
+  community.postgresql.postgresql_privs:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    database: postgres
+    type: database
+    objs: "{{ instance_slug }}"
+    privs: CONNECT
+    roles: "{{ tenant_pg_role }}"
+    state: absent
+  when: _state_target != 'running'
+
+- name: "[{{ tenant_name }}] Terminate any live backends on this tenant's database"
+  community.postgresql.postgresql_query:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    db: postgres
+    query: "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %(dbname)s"
+    named_args:
+      dbname: "{{ instance_slug }}"
+  when: _state_target != 'running'
+
+- import_tasks: _purge-tenant-redis-sessions.yml
+  when: _state_target != 'running'
+
+- name: "[{{ tenant_name }}] GRANT the pool role's CONNECT back on this tenant's database"
+  community.postgresql.postgresql_privs:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    database: postgres
+    type: database
+    objs: "{{ instance_slug }}"
+    privs: CONNECT
+    roles: "{{ tenant_pg_role }}"
+    state: present
+  when: _state_target == 'running'
+
+- name: "[{{ tenant_name }}] Repoint the IngressRoute ({{ _state_target }})"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: tenant-ingressroute.yaml.j2
+  vars:
+    instance_state: "{{ _state_target }}"
+    version: "{{ tenant_version }}"
+    plan: "{{ tenant_plan }}"
+    custom_domain: "{{ tenant_custom_domain }}"

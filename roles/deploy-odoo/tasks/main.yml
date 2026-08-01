@@ -1,56 +1,83 @@
 ---
-# tasks file for deploy-odoo (k3s)
+# tasks file for deploy-odoo (k3s) - SHARED MULTI-TENANT POOL MODEL.
 #
 # Dispatch is driven by a single `odoo_action` extra-var (AWX surveys set
-# extra_vars, not --tags — see README.md "Actions"). Named `odoo_action`
+# extra_vars, not --tags - see README.md "Actions"). Named `odoo_action`
 # rather than `action` because `action` is an Ansible reserved variable name.
 #
-# This role is strictly instance-scoped: every action operates on exactly one
-# instance. Customer-level operations (e.g. suspend every instance for a
-# customer) are orchestrated by the Xayma app, which loops this Job Template
-# over the customer's active instances.
-#
-# Instance scope: deploy, start, stop, suspend, restart, edit-domain, delete,
-#                 restore
-#
-# Backups are orchestrated externally by n8n (driven by the app's live
-# plan/payment status), not baked into the instance at deploy time — this
-# role owns no snapshot policy or schedule. `restore` stays here: it's a
-# deliberate ops action against a snapshot already sitting in the platform
-# MinIO, not dynamic backup policy.
-
-- import_tasks: _assert-identity.yml
+# Two actions are NOT tenant-scoped - they carry no customer/instancename:
+#   sync-addons  - namespace/pool-scoped (git pull onto the shared addons
+#                  PVC); dispatches immediately, before every other assert -
+#                  it needs no vault secrets or plan either.
+#   apply-plan   - pool-scoped (reconciles an existing pool's frozen sizing -
+#                  see README "Plan resolution"); skips the tenant identity
+#                  assert but still needs `version`+`plan` and the vault/
+#                  plan asserts below.
+# Every other action is strictly tenant-scoped: it operates on exactly one
+# tenant, never more. Customer-level operations (e.g. suspending every
+# tenant for a customer that hasn't paid) are orchestrated by the Xayma app,
+# which loops this same tenant-scoped Job Template over every active tenant
+# belonging to that customer - the role itself carries no multi-tenant
+# action and never will.
 
 - name: Assert a valid `odoo_action` was provided
   ansible.builtin.assert:
     that: odoo_action is defined and odoo_action in [
-            'deploy','start','stop','suspend','restart','edit-domain','delete',
-            'restore']
-    fail_msg: "Set -e odoo_action=<one of: deploy|start|stop|suspend|restart|edit-domain|delete|restore>"
+            'deploy', 'start', 'stop', 'suspend', 'restart', 'edit-domain',
+            'change-plan', 'apply-plan', 'change-version', 'delete',
+            'restore', 'backup', 'sync-addons']
+    fail_msg: >-
+      Set -e odoo_action=<one of: deploy|start|stop|suspend|restart|
+      edit-domain|change-plan|apply-plan|change-version|delete|restore|
+      backup|sync-addons>
 
+- import_tasks: sync-addons.yml
+  when: odoo_action == 'sync-addons'
+
+- import_tasks: _assert-identity.yml
+  when: odoo_action not in ['sync-addons', 'apply-plan']
+
+- import_tasks: _assert-vault.yml
+  when: odoo_action != 'sync-addons'
+
+# Required for odoo_action=deploy/change-plan/apply-plan only - every other
+# tenant-scoped action recovers its pool assignment from live state instead
+# (see tasks/_recover-tenant.yml) rather than taking `plan` as input again.
 - import_tasks: _assert-plan.yml
-  when: odoo_action in ['deploy', 'restart']
+  when: odoo_action in ['deploy', 'change-plan', 'apply-plan']
 
-- import_tasks: deploy-instance.yml
+- import_tasks: apply-plan.yml
+  when: odoo_action == 'apply-plan'
+
+- import_tasks: deploy-tenant.yml
   when: odoo_action == 'deploy'
 
-- import_tasks: start-instance.yml
+- import_tasks: start-tenant.yml
   when: odoo_action == 'start'
 
-- import_tasks: stop-instance.yml
+- import_tasks: stop-tenant.yml
   when: odoo_action == 'stop'
 
-- import_tasks: suspend-instance.yml
+- import_tasks: suspend-tenant.yml
   when: odoo_action == 'suspend'
 
-- import_tasks: restart-instance.yml
+- import_tasks: restart-tenant.yml
   when: odoo_action == 'restart'
 
-- import_tasks: edit-instance-domainname.yml
+- import_tasks: edit-tenant-domain.yml
   when: odoo_action == 'edit-domain'
 
-- import_tasks: delete-instance.yml
+- import_tasks: change-plan.yml
+  when: odoo_action == 'change-plan'
+
+- import_tasks: change-version.yml
+  when: odoo_action == 'change-version'
+
+- import_tasks: delete-tenant.yml
   when: odoo_action == 'delete'
 
-- import_tasks: restore-instance.yml
+- import_tasks: restore-tenant.yml
   when: odoo_action == 'restore'
+
+- import_tasks: backup-tenant.yml
+  when: odoo_action == 'backup'

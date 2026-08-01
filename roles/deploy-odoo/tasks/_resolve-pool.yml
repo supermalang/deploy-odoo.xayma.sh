@@ -1,0 +1,130 @@
+---
+# Idempotent ensure of ONE pool (version+plan) - run by odoo_action=deploy
+# (see main.yml), by change-plan.yml for its TARGET pool, and by
+# apply-plan.yml (which sets `_force_pool_apply: true` to bypass the
+# create-only guard below). Requires `pool_spec`/`pool_spec_hash` already
+# set (see tasks/_resolve-plan-spec.yml, imported by the caller).
+#
+# CREATE-ONLY POOL SEMANTICS (see README "Plan resolution"): pool-scoped
+# manifests (ConfigMap/Deployments/HPA - NOT the PG role or the PDB, neither
+# of which are spec-derived) are applied ONLY the first time this pool is
+# created, OR when the caller is apply-plan. On every other call, if the
+# pool already exists and the incoming pool_spec_hash differs from what it
+# was actually built with (`{{ pool_spec_hash_annotation_key }}` on the http
+# Deployment), the incoming pool-scoped values are IGNORED - a mismatched
+# plan_spec sent by a normal deploy/change-plan NEVER silently resizes a
+# pool out from under its other tenants.
+
+- import_tasks: _ensure-odoo-image.yml
+
+- name: "[{{ pool_id }}] Check whether the pool already exists"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ pool_http_name }}"
+  register: _pool_existing
+
+- name: "[{{ pool_id }}] Determine whether the pool-scoped spec should be (re)applied"
+  ansible.builtin.set_fact:
+    _pool_apply_spec: >-
+      {{ (_pool_existing.resources | length == 0)
+         or (_force_pool_apply | default(false) | bool)
+         or (_pool_existing.resources[0].metadata.annotations
+             | default({}) | dict2items
+             | selectattr('key', 'equalto', pool_spec_hash_annotation_key)
+             | map(attribute='value') | list | first | default('')) == pool_spec_hash }}
+
+- name: "[{{ pool_id }}] Warn - incoming plan_spec differs from this pool's frozen spec, IGNORING pool-scoped keys"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: pool {{ pool_id }} already exists with a DIFFERENT
+      pool-scoped spec than what was just resolved for this call. Its
+      frozen sizing (workers/replicas/pod resources/limits/cron
+      threads/db_maxconn) is being left untouched - create-only pool
+      semantics (see README "Plan resolution"). To actually resize this
+      pool for every tenant on it, run odoo_action=apply-plan with the
+      desired plan_spec.
+  when: not (_pool_apply_spec | bool)
+
+- name: "[{{ pool_id }}] Apply the pool's PG role Secret"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: pool-secret.yaml.j2
+  no_log: true
+
+- import_tasks: _pg-connection.yml
+
+# One LOGIN role per pool (see README "PostgreSQL access model") - password
+# derived from the same vault-seed pattern as every other secret in this
+# role (vars/main.yml: `_pool_db_password`), keyed on pool_id so it rotates
+# independently per pool. No database-level grants here - CONNECT is
+# granted per-tenant-database at tenant creation (deploy-tenant.yml) and
+# toggled per-tenant on suspend/stop/start (_set-tenant-state.yml). No PG
+# role CONNECTION LIMIT either - per-tenant throttling is PgBouncer's
+# `tenant_db_max_connections` job (see _sync-pgbouncer-tenants.yml);
+# `pool_spec.db_maxconn` is odoo.conf's own per-worker-process setting
+# (worker-side demand, not the fairness lever - see README).
+- name: "[{{ pool_id }}] Ensure the pool's PG LOGIN role exists"
+  community.postgresql.postgresql_user:
+    login_host: "{{ pg_conn_host }}"
+    login_user: postgres
+    login_password: "{{ _pg_superuser_password }}"
+    db: postgres
+    name: "{{ pool_pg_role }}"
+    password: "{{ _pool_db_password }}"
+    role_attr_flags: LOGIN
+  no_log: true
+
+- name: "[{{ pool_id }}] Apply the pool's odoo.conf ConfigMap (pool-scoped - create-only)"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: pool-configmap.yaml.j2
+  when: _pool_apply_spec | bool
+
+- name: "[{{ pool_id }}] Apply the pool's Deployments + Services (pool-scoped - create-only)"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: pool-deployments.yaml.j2
+  when: _pool_apply_spec | bool
+
+- name: "[{{ pool_id }}] Apply the {pool}-http HorizontalPodAutoscaler (pool-scoped - create-only)"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: pool-hpa.yaml.j2
+  when: _pool_apply_spec | bool
+
+# Not spec-derived (minAvailable: 1 is fixed) - always safe to reapply.
+- name: "[{{ pool_id }}] Apply the {pool}-http PodDisruptionBudget"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: pool-pdb.yaml.j2
+
+- name: "[{{ pool_id }}] Wait for the pool's Deployments to have at least 1 ready replica"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ item }}"
+  register: _pool_deployment
+  until: >-
+    _pool_deployment.resources | length > 0 and
+    _pool_deployment.resources[0].status.readyReplicas | default(0) | int > 0
+  retries: 60
+  delay: 5
+  loop:
+    - "{{ pool_http_name }}"
+    - "{{ pool_cron_name }}"
+    - "{{ pool_gevent_name }}"
+  loop_control:
+    label: "{{ item }}"

@@ -1,0 +1,99 @@
+#jinja2: lstrip_blocks: True
+---
+# ONE shared Redis for Odoo sessions (MANDATORY - no filesystem fallback,
+# see README). A StatefulSet (not a Deployment) SPECIFICALLY for a
+# deterministic pod name ({{ redis_pod_name }}) - session purges
+# (suspend/stop/restart) exec directly into it. `--appendonly yes` so a pod
+# restart doesn't mass-log-out every tenant on the platform.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ redis_secret_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'redis'}) | to_json }}
+type: Opaque
+stringData:
+  REDIS_PASSWORD: {{ _redis_password | to_json }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ redis_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'redis'}) | to_json }}
+spec:
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ redis_name }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'redis'}) | to_json }}
+spec:
+  serviceName: {{ redis_name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'redis'}) | to_json }}
+    spec:
+      containers:
+        - name: redis
+          image: redis:{{ versions.redis }}
+          command:
+            - redis-server
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --maxmemory
+            - "{{ redis.maxmemory }}"
+            - --maxmemory-policy
+            - "{{ redis.maxmemory_policy }}"
+            - --appendonly
+            - "yes"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ redis_secret_name }}
+                  key: REDIS_PASSWORD
+          ports:
+            - name: redis
+              containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "{{ redis.cpu_request }}"
+              memory: "{{ redis.mem_request }}"
+            limits:
+              cpu: "{{ redis.cpu_limit }}"
+              memory: "{{ redis.mem_limit }}"
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'redis'}) | to_json }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ odoo.storage_class }}
+        resources:
+          requests:
+            storage: {{ redis.storage }}

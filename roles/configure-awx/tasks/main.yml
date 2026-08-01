@@ -1,0 +1,69 @@
+---
+# Creates/updates the AWX router pattern (see main README "AWX"): the
+# app-facing WFJT `odoo-tenant` (allow_simultaneous=true - it only routes)
+# has ONE node pointing at `odoo-router`, an imperative playbook
+# (awx-router.yml) that calls the AWX API to launch whichever INTERNAL Job
+# Template (allow_simultaneous=false each - independent queues) actually
+# owns the received odoo_action. AWX Workflow nodes can only branch on
+# success/failure, not on an extra_var's value, so the "router" logic has
+# to be imperative code somewhere - see awx-router.yml's header comment.
+
+- name: Ensure the odoo-lifecycle-internal Job Template exists (fast actions)
+  awx.awx.job_template:
+    name: "{{ awx_lifecycle_jt_name }}"
+    project: "{{ awx_project_name }}"
+    playbook: site.yml
+    inventory: "{{ awx_inventory_name }}"
+    credentials:
+      - "{{ awx_machine_credential_name }}"
+      - "{{ awx_vault_credential_name }}"
+    allow_simultaneous: false
+    ask_variables_on_launch: true
+    survey_enabled: true
+    survey_spec: "{{ awx_survey_spec | combine({'name': awx_lifecycle_jt_name}) }}"
+    state: present
+
+- name: Ensure the odoo-provision-internal Job Template exists (slow actions)
+  awx.awx.job_template:
+    name: "{{ awx_provision_jt_name }}"
+    project: "{{ awx_project_name }}"
+    playbook: site.yml
+    inventory: "{{ awx_inventory_name }}"
+    credentials:
+      - "{{ awx_machine_credential_name }}"
+      - "{{ awx_vault_credential_name }}"
+    allow_simultaneous: false
+    ask_variables_on_launch: true
+    survey_enabled: true
+    survey_spec: "{{ awx_survey_spec | combine({'name': awx_provision_jt_name}) }}"
+    state: present
+
+- name: Ensure the odoo-router Job Template exists
+  awx.awx.job_template:
+    name: "{{ awx_router_jt_name }}"
+    project: "{{ awx_project_name }}"
+    playbook: awx-router.yml
+    inventory: "{{ awx_inventory_name }}"
+    credentials:
+      - "{{ awx_controller_credential_name }}"
+    allow_simultaneous: true
+    ask_variables_on_launch: true
+    survey_enabled: true
+    survey_spec: "{{ awx_survey_spec | combine({'name': awx_router_jt_name}) }}"
+    state: present
+
+- name: Ensure the odoo-tenant Workflow Job Template exists
+  awx.awx.workflow_job_template:
+    name: "{{ awx_wfjt_name }}"
+    allow_simultaneous: true
+    ask_variables_on_launch: true
+    survey_enabled: true
+    survey_spec: "{{ awx_survey_spec | combine({'name': awx_wfjt_name}) }}"
+    state: present
+
+- name: Ensure the WFJT's single node routes to odoo-router
+  awx.awx.workflow_job_template_node:
+    workflow_job_template: "{{ awx_wfjt_name }}"
+    unified_job_template: "{{ awx_router_jt_name }}"
+    identifier: route-to-internal-template
+    state: present

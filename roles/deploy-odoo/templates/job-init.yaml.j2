@@ -1,0 +1,71 @@
+#jinja2: lstrip_blocks: True
+---
+# One-shot DB init - Job name is a MUTEX (fixed, not timestamped): retrying
+# a failed odoo_action=deploy reapplies the SAME Job name, so a still-
+# running init can never be duplicated. NEVER re-runs against an already-
+# initialized database - see deploy-tenant.yml's idempotency guard.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: init-{{ instance_slug }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ tenant_labels | combine({'xayma.sh/job-role': 'init'}) | to_json }}
+spec:
+  activeDeadlineSeconds: 900
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {{ tenant_labels | combine({'xayma.sh/job-role': 'init'}) | to_json }}
+    spec:
+      restartPolicy: Never
+      priorityClassName: {{ priorityclass.name }}
+      initContainers:
+        - name: render-config
+          image: busybox:{{ versions.busybox }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              sed
+              -e "s|\${DB_USER}|$DB_USER|g"
+              -e "s|\${DB_PASSWORD}|$DB_PASSWORD|g"
+              -e "s|\${DB_HOST}|$DB_HOST|g"
+              /config/odoo.conf > /etc/odoo/odoo.conf
+          env:
+            - {name: DB_HOST, value: "{{ pg_target }}"}
+          envFrom:
+            - secretRef: {name: "{{ pool_secret_name }}"}
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: etc-odoo, mountPath: /etc/odoo}
+      containers:
+        - name: init
+          # --no-http below means session_redis's own runtime is never
+          # invoked (ODOO_SESSION_REDIS is intentionally left unset here -
+          # see pool-deployments.yaml.j2 for where it's actually needed).
+          image: "{{ odoo_image_repo }}:{{ version }}.0"
+          command: ["odoo"]
+          args:
+            - -c
+            - /etc/odoo/odoo.conf
+            - -d
+            - "{{ instance_slug }}"
+            - -i
+            - "{{ tenant_spec.init_modules }}"
+            - --without-demo=all
+            - --stop-after-init
+            - --no-http
+          volumeMounts:
+            - {name: etc-odoo, mountPath: /etc/odoo}
+            - {name: filestore, mountPath: /var/lib/odoo}
+            - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {cpu: "1", memory: 2Gi}
+      volumes:
+        - {name: config, configMap: {name: "{{ pool_config_name }}"}}
+        - {name: etc-odoo, emptyDir: {}}
+        - {name: filestore, persistentVolumeClaim: {claimName: odoo-filestore}}
+        - {name: addons, persistentVolumeClaim: {claimName: odoo-addons}}

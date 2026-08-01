@@ -1,0 +1,61 @@
+---
+# include_tasks helper (only when the init Job is actually about to run -
+# see deploy-tenant.yml) - fails fast if any of tenant_spec.init_modules
+# isn't present in the shared addons PVC, rather than letting `odoo -i`
+# partially fail deep inside a batch-low Job.
+- name: "[{{ tenant_name }}] Run the addons-path module-existence check"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: job-fileops.yaml.j2
+  vars:
+    _fileops_name: "check-modules-{{ instance_slug }}-{{ ansible_date_time.iso8601_basic_short | lower }}"
+    _fileops_command: >-
+      MISSING="";
+      for m in {{ tenant_spec.init_modules.split(',') | join(' ') }}; do
+        [ -d "/addons/$m" ] || MISSING="$MISSING $m";
+      done;
+      if [ -n "$MISSING" ]; then echo "MISSING:$MISSING"; exit 1; fi;
+      echo OK
+  register: _checkmod_job
+
+- name: "[{{ tenant_name }}] Wait for the module-existence check to complete"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Job
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ _checkmod_job.result.metadata.name }}"
+  register: _checkmod_status
+  until: >-
+    _checkmod_status.resources | length > 0 and
+    (_checkmod_status.resources[0].status.succeeded | default(0) | int > 0 or
+     _checkmod_status.resources[0].status.failed | default(0) | int > 0)
+  retries: 30
+  delay: 3
+
+- name: "[{{ tenant_name }}] Fetch the module-existence check's output"
+  kubernetes.core.k8s_log:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "job-name={{ _checkmod_job.result.metadata.name }}"
+  register: _checkmod_logs
+
+- name: "[{{ tenant_name }}] Delete the module-existence check Job"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ _checkmod_job.result.metadata.name }}"
+
+- name: "[{{ tenant_name }}] Assert every init_modules entry exists in the addons path"
+  ansible.builtin.assert:
+    that: "'MISSING' not in (_checkmod_logs.log | default(''))"
+    fail_msg: >-
+      One or more init_modules for {{ tenant_name }} (plan={{ plan }}:
+      {{ tenant_spec.init_modules }}) do not exist under the shared addons
+      PVC - {{ _checkmod_logs.log | default('') }}. Run
+      odoo_action=sync-addons or check the module name before retrying.
