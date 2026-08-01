@@ -21,6 +21,8 @@
     ask_variables_on_launch: true
     survey_enabled: true
     survey_spec: "{{ awx_survey_spec | combine({'name': awx_lifecycle_jt_name}) }}"
+    notification_templates_error:
+      - "{{ awx_failure_notification_template_name }}"
     state: present
 
 - name: Ensure the odoo-provision-internal Job Template exists (slow actions)
@@ -36,6 +38,8 @@
     ask_variables_on_launch: true
     survey_enabled: true
     survey_spec: "{{ awx_survey_spec | combine({'name': awx_provision_jt_name}) }}"
+    notification_templates_error:
+      - "{{ awx_failure_notification_template_name }}"
     state: present
 
 - name: Ensure the odoo-router Job Template exists
@@ -66,4 +70,19 @@
     workflow_job_template: "{{ awx_wfjt_name }}"
     unified_job_template: "{{ awx_router_jt_name }}"
     identifier: route-to-internal-template
+    state: present
+
+# odoo_action=check-snapshot-freshness needs no per-tenant looping (see
+# roles/deploy-odoo tasks/main.yml header comment) - a plain AWX Schedule
+# with fixed extra_vars against the WFJT covers it, same mechanism README
+# "Scheduled operations" already rules out for backup specifically because
+# backup needs one call per tenant.
+- name: Ensure the nightly snapshot-freshness-check Schedule exists
+  awx.awx.schedule:
+    name: "{{ awx_snapshot_freshness_schedule_name }}"
+    unified_job_template: "{{ awx_wfjt_name }}"
+    rrule: "{{ awx_snapshot_freshness_rrule }}"
+    extra_data:
+      odoo_action: check-snapshot-freshness
+    enabled: true
     state: present

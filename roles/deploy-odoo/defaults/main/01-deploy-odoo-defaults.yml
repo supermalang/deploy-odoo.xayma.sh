@@ -110,18 +110,27 @@ odoo:
   filestore_storage: 50Gi
   addons_storage: 5Gi
 
-  # Platform MinIO (internal, snapshot target for backup/restore) - same
-  # values as install-platform.xayma.sh's deploy-databases/deploy-platform-storage.
+  # Platform MinIO (internal, snapshot target for backup/restore) - endpoint/
+  # bucket match install-platform.xayma.sh's deploy-databases/deploy-platform-storage,
+  # but the credential is the scoped `xayma.snapshots` user, NOT the platform
+  # root user - it can only Get/Put/Delete objects and list this one bucket.
   storage_namespace: xayma-storage
   snapshot_bucket: snapshots
   snapshot_endpoint: "http://minio.xayma-storage.svc:9000"
-  snapshot_access_key: "{{ vault_odoo_minio_access_key }}"
-  snapshot_secret_key: "{{ vault_odoo_minio_secret_key }}"
+  snapshot_access_key: "{{ vault_odoo_snapshot_access_key }}"
+  snapshot_secret_key: "{{ vault_odoo_snapshot_secret_key }}"
 
   # odoo_action=sync-addons (git pull onto the addons PVC). No default repo
   # URL on purpose: it must be supplied per-run (-e addons_repo_url=...)
   # since it is credential-adjacent - see tasks/sync-addons.yml.
   addons_repo_ref: main
+
+# odoo_action=check-snapshot-freshness (tasks/check-snapshot-freshness.yml) -
+# how stale a tenant's newest daily snapshot may be before the check fails
+# (surfaced as an AWX Job failure -> the notification_templates_error wired
+# in roles/configure-awx). One nightly cycle plus slack.
+snapshot_freshness:
+  max_age_hours: 30
 
 # Shared Postgres sizing (ONE StatefulSet for the whole tier - not a plan_*
 # concern; see pg_topology above).

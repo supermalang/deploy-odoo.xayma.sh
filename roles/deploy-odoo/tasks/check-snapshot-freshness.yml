@@ -1,0 +1,86 @@
+---
+# Namespace-scoped auxiliary action (no tenant identity) - independently
+# verifies every live, non-stopped tenant has a daily snapshot newer than
+# `snapshot_freshness.max_age_hours` in the platform MinIO. Deliberately
+# reads the tenant list from LIVE IngressRoute state (same source
+# tasks/_sync-pgbouncer-tenants.yml already trusts), not from anything the
+# calling app believes is "active" - if the app's own nightly backup loop
+# silently drops a tenant, no backup Job ever runs and Job-failure
+# notifications (see roles/configure-awx) never fire either; this check is
+# the independent backstop for exactly that blind spot. Suspended tenants
+# are still checked (only `stopped` is excluded) - pausing snapshots for a
+# suspended-but-still-paying tenant is a policy call for later, not this fix.
+- name: "List every live, non-stopped tenant IngressRoute"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: IngressRoute
+    api_version: traefik.io/v1alpha1
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "xayma.sh/customer"
+      - "xayma.sh/state!=stopped"
+  register: _freshness_ingressroutes
+
+# Built with an explicit {% for %} + bracket access
+# (r.metadata.labels['xayma.sh/customer']), NOT
+# `map(attribute='xayma.sh/customer')` - the `attribute=` kwarg splits on
+# every '.' (it's meant for dotted attribute PATHS), so it mis-parses a
+# label key that itself contains a literal '.' as "xayma" then "sh/customer"
+# and blows up. Bracket subscripting is exact, no splitting.
+# Flattened straight to a single space-separated "customer/instance" string
+# (rather than a list of dicts) so the Job's shell script can loop over it
+# natively with a plain POSIX `for`, instead of embedding Jinja logic inside
+# a YAML folded (`>-`) shell command block.
+- name: "Build the space-separated customer/instance pair list for the Job's shell loop"
+  ansible.builtin.set_fact:
+    _freshness_tenant_pairs: >-
+      {% for r in _freshness_ingressroutes.resources %}{{ r.metadata.labels['xayma.sh/customer'] }}/{{ r.metadata.labels['xayma.sh/instance'] }}{{ ' ' if not loop.last else '' }}{% endfor %}
+    _freshness_tenant_count: "{{ _freshness_ingressroutes.resources | length }}"
+
+# An empty for-loop above renders to an empty STRING, but Ansible's
+# templating coerces a template that resolves to '' into None - guard it
+# back to '' explicitly, since the Job template needs a real (possibly
+# empty) string to interpolate into its shell `for` loop, not the literal
+# text "None".
+- name: "Guard against the zero-tenant case rendering as None"
+  ansible.builtin.set_fact:
+    _freshness_tenant_pairs: "{{ _freshness_tenant_pairs | default('', true) }}"
+
+- name: "Apply the snapshot-freshness-check Job"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: job-snapshot-freshness-check.yaml.j2
+  register: _freshness_job
+
+- name: "Wait for the snapshot-freshness-check Job to complete"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Job
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ _freshness_job.result.metadata.name }}"
+  register: _freshness_job_status
+  until: >-
+    _freshness_job_status.resources | length > 0 and
+    (_freshness_job_status.resources[0].status.succeeded | default(0) | int > 0 or
+     _freshness_job_status.resources[0].status.failed | default(0) | int > 0)
+  retries: 60
+  delay: 5
+
+- name: "Surface the snapshot-freshness-check Job's pod logs on failure"
+  kubernetes.core.k8s_log:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "job-name={{ _freshness_job.result.metadata.name }}"
+  register: _freshness_job_logs
+  when: _freshness_job_status.resources[0].status.failed | default(0) | int > 0
+
+- name: "Assert every tenant has a fresh snapshot"
+  ansible.builtin.assert:
+    that: _freshness_job_status.resources[0].status.succeeded | default(0) | int > 0
+    fail_msg: >-
+      {{ _freshness_job.result.metadata.name }} found one or more tenants
+      without a snapshot newer than {{ snapshot_freshness.max_age_hours }}h -
+      pod logs: {{ _freshness_job_logs.log | default('(no logs captured)') }}

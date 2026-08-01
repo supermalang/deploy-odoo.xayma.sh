@@ -20,7 +20,7 @@
   gather_facts: false
   vars:
     _fast_actions: [start, stop, suspend, restart, edit-domain, change-plan, apply-plan]
-    _slow_actions: [deploy, delete, restore, backup]
+    _slow_actions: [deploy, delete, restore, backup, check-snapshot-freshness]
   tasks:
     - name: Assert odoo_action is one this router knows how to dispatch
       ansible.builtin.assert:

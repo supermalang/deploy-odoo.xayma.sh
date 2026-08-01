@@ -17,10 +17,30 @@ awx_vault_credential_name: "deploy-odoo-vault"
 # at PROVISIONING time, above).
 awx_controller_credential_name: "awx-api-token"
 
+# This role does NOT create this object either - create a Notification
+# Template (Slack/email/PagerDuty/whatever channel) once in the AWX UI under
+# this name, or override the default to match one you already have. Attached
+# to the two INTERNAL Job Templates only (see tasks/main.yml) - not to
+# odoo-router/the WFJT, which would just double-fire the same alert for
+# every failure they already surface.
+awx_failure_notification_template_name: "deploy-odoo-failures"
+
 awx_wfjt_name: odoo-tenant
 awx_lifecycle_jt_name: odoo-lifecycle-internal
 awx_provision_jt_name: odoo-provision-internal
 awx_router_jt_name: odoo-router
+
+# odoo_action=check-snapshot-freshness takes no tenant identity at all, so -
+# unlike backup, which needs the app to loop per tenant - it's a genuine fit
+# for AWX's own Schedule (fixed extra_vars against ONE Job Template; see
+# README "Scheduled operations"). Bound to the WFJT (not directly to
+# odoo-provision-internal) so it goes through the same router/notification
+# path as every app-launched call.
+awx_snapshot_freshness_schedule_name: "odoo-snapshot-freshness-check-nightly"
+# iCal RRULE - DTSTART is just a time-of-day anchor (iCal recurrence, not a
+# "start after this date" gate), any past date works. Override to change
+# the schedule's time-of-day/frequency.
+awx_snapshot_freshness_rrule: "DTSTART:20260101T033000Z RRULE:FREQ=DAILY;INTERVAL=1"
 
 # Shared survey fields every entry-point Job Template exposes - the router
 # and both internal templates all take the SAME extra_vars contract (see
@@ -31,7 +51,7 @@ awx_survey_spec:
   description: "deploy-odoo tenant/pool lifecycle contract"
   spec:
     - {question_name: "Action", variable: odoo_action, type: multiplechoice, required: true,
-       choices: "deploy\nstart\nstop\nsuspend\nrestart\nedit-domain\nchange-plan\napply-plan\nchange-version\ndelete\nrestore\nbackup\nsync-addons"}
+       choices: "deploy\nstart\nstop\nsuspend\nrestart\nedit-domain\nchange-plan\napply-plan\nchange-version\ndelete\nrestore\nbackup\nsync-addons\ncheck-snapshot-freshness"}
     - {question_name: "Customer", variable: customer, type: text, required: false}
     - {question_name: "Instance name", variable: instancename, type: text, required: false}
     - {question_name: "Odoo version", variable: version, type: text, required: false, default: "19"}

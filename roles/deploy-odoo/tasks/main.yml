@@ -5,7 +5,7 @@
 # extra_vars, not --tags - see README.md "Actions"). Named `odoo_action`
 # rather than `action` because `action` is an Ansible reserved variable name.
 #
-# Two actions are NOT tenant-scoped - they carry no customer/instancename:
+# Three actions are NOT tenant-scoped - they carry no customer/instancename:
 #   sync-addons  - namespace/pool-scoped (git pull onto the shared addons
 #                  PVC); dispatches immediately, before every other assert -
 #                  it needs no vault secrets or plan either.
@@ -13,6 +13,12 @@
 #                  see README "Plan resolution"); skips the tenant identity
 #                  assert but still needs `version`+`plan` and the vault/
 #                  plan asserts below.
+#   check-snapshot-freshness - namespace-scoped (see
+#                  tasks/check-snapshot-freshness.yml); skips the tenant
+#                  identity assert (it reads its own tenant list from live
+#                  IngressRoutes) but still needs the vault asserts below
+#                  (it's the one non-tenant-scoped action that touches
+#                  MinIO).
 # Every other action is strictly tenant-scoped: it operates on exactly one
 # tenant, never more. Customer-level operations (e.g. suspending every
 # tenant for a customer that hasn't paid) are orchestrated by the Xayma app,
@@ -25,17 +31,20 @@
     that: odoo_action is defined and odoo_action in [
             'deploy', 'start', 'stop', 'suspend', 'restart', 'edit-domain',
             'change-plan', 'apply-plan', 'change-version', 'delete',
-            'restore', 'backup', 'sync-addons']
+            'restore', 'backup', 'sync-addons', 'check-snapshot-freshness']
     fail_msg: >-
       Set -e odoo_action=<one of: deploy|start|stop|suspend|restart|
       edit-domain|change-plan|apply-plan|change-version|delete|restore|
-      backup|sync-addons>
+      backup|sync-addons|check-snapshot-freshness>
 
 - import_tasks: sync-addons.yml
   when: odoo_action == 'sync-addons'
 
+- import_tasks: check-snapshot-freshness.yml
+  when: odoo_action == 'check-snapshot-freshness'
+
 - import_tasks: _assert-identity.yml
-  when: odoo_action not in ['sync-addons', 'apply-plan']
+  when: odoo_action not in ['sync-addons', 'apply-plan', 'check-snapshot-freshness']
 
 - import_tasks: _assert-vault.yml
   when: odoo_action != 'sync-addons'

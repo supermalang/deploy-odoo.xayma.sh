@@ -1,0 +1,51 @@
+#jinja2: lstrip_blocks: True
+---
+# odoo_action=check-snapshot-freshness - namespace-scoped, no tenant identity
+# (see tasks/check-snapshot-freshness.yml). Metadata-only rclone check
+# against the platform MinIO: for every LIVE, non-stopped tenant, fails
+# unless its `daily` prefix holds an object newer than
+# snapshot_freshness.max_age_hours. This is the independent backstop for a
+# tenant whose backup Job silently stops being invoked at all (a Job-failure
+# notification never fires for a Job that never ran).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: snapshot-freshness-check-{{ ansible_date_time.iso8601_basic_short | lower }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | combine({'xayma.sh/job-role': 'backup'}) | to_json }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {{ platform_base_labels | combine({'xayma.sh/job-role': 'backup'}) | to_json }}
+    spec:
+      restartPolicy: Never
+      priorityClassName: {{ priorityclass.name }}
+      containers:
+        - name: rclone-check
+          image: rclone/rclone:{{ versions.rclone }}
+          command:
+            - /bin/sh
+            - -c
+            - >-
+              set -eu;
+              stale="";
+              for pair in {{ _freshness_tenant_pairs }}; do
+                customer="${pair%/*}";
+                instance="${pair#*/}";
+                if [ -z "$(rclone lsf snapshot:{{ odoo.snapshot_bucket }}/$customer/$instance/daily/ --max-age {{ snapshot_freshness.max_age_hours }}h --files-only -R)" ]; then
+                  echo "STALE: $customer/$instance has no daily snapshot newer than {{ snapshot_freshness.max_age_hours }}h";
+                  stale="$stale $pair";
+                fi;
+              done;
+              if [ -n "$stale" ]; then echo "Stale tenants:$stale"; exit 1; fi;
+              echo "All {{ _freshness_tenant_count }} tenant(s) have a fresh snapshot"
+          env:
+            - {name: RCLONE_CONFIG_SNAPSHOT_TYPE, value: s3}
+            - {name: RCLONE_CONFIG_SNAPSHOT_PROVIDER, value: Other}
+            - {name: RCLONE_CONFIG_SNAPSHOT_ENDPOINT, value: {{ odoo.snapshot_endpoint | to_json }}}
+            - {name: RCLONE_CONFIG_SNAPSHOT_ACL, value: private}
+          envFrom:
+            - secretRef: {name: "{{ minio_secret_name }}"}

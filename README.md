@@ -254,11 +254,11 @@ below). The role fails fast with a clear message if `odoo_action` is
 missing or not one of these values.
 
 This role is **strictly tenant-scoped** for every action except
-`apply-plan` (pool-scoped) and `sync-addons` (namespace-scoped): every other
-action operates on exactly one tenant, never more. Customer-level
-operations (e.g. suspending every tenant for a customer that hasn't paid)
-are orchestrated by the Xayma app, which loops the tenant-scoped WFJT over
-every active tenant belonging to that customer.
+`apply-plan` (pool-scoped) and `sync-addons`/`check-snapshot-freshness`
+(namespace-scoped): every other action operates on exactly one tenant, never
+more. Customer-level operations (e.g. suspending every tenant for a customer
+that hasn't paid) are orchestrated by the Xayma app, which loops the
+tenant-scoped WFJT over every active tenant belonging to that customer.
 
 | `odoo_action` | Scope | Description |
 |-----|-------|-------------|
@@ -273,8 +273,9 @@ every active tenant belonging to that customer.
 | `change-version` | tenant | **Stub — fails fast.** Out of scope, see "Non-goals" |
 | `delete` | tenant | Final adhoc backup, drop the DB, remove filestore dir + PgBouncer entry, delete every labelled object; scales the pool to 0 if it was the last tenant (never deletes pool objects) |
 | `restore` | tenant | Restore a snapshot (`snapshot_id`, optional `snapshot_kind`) — fences via REVOKE/terminate, no scaling steps |
-| `backup` | tenant | Single-tenant `pg_dump` + filestore tar → MinIO |
+| `backup` | tenant | Single-tenant `pg_dump` + filestore tar → MinIO, scoped `xayma.snapshots` credential |
 | `sync-addons` | **namespace** | `git pull` onto the shared addons PVC — no tenant identity |
+| `check-snapshot-freshness` | **namespace** | Fail unless every live, non-stopped tenant has a `daily` snapshot newer than `snapshot_freshness.max_age_hours` — independent backstop for a tenant whose `backup` silently stops being invoked at all (see "Observability") |
 
 PgBouncer & per-tenant fairness
 --------------------------------
@@ -355,6 +356,13 @@ three alerts externally (dashboards are out of scope here):
    earliest signal of one tenant needing a `change-plan` or a data cleanup
    conversation, now that noisy-neighbor DB growth is everyone's problem.
 
+Backup failures and snapshot staleness are **not** on this externally-configured
+list — they're surfaced through AWX's own notification mechanism instead (see
+"AWX" below): a `backup` Job failing triggers `notification_templates_error`
+directly, and `check-snapshot-freshness`'s nightly Schedule catches the
+otherwise-silent case of a tenant whose `backup` stops being invoked at all
+(no Job ever runs, so no Job-failure notification would fire either).
+
 AWX
 ---
 The calling app knows exactly **one** launch target: the Workflow Job
@@ -373,22 +381,29 @@ the prerequisites that setup itself relies on (Project/Inventory/credentials).
 - `odoo-lifecycle-internal` (`allow_simultaneous: false`) — `start`/`stop`/
   `suspend`/`restart`/`edit-domain`/`change-plan`/`apply-plan` (fast).
 - `odoo-provision-internal` (`allow_simultaneous: false`) — `deploy`/
-  `delete`/`restore`/`backup` (slow).
+  `delete`/`restore`/`backup`/`check-snapshot-freshness` (slow).
 - Cross-queue safety = per-tenant Job-name mutexes (`init-{slug}`, etc.) +
   the state asserts already in the playbook — `odoo-router` itself is
   `allow_simultaneous: true` since it does no cluster work.
 - `sync-addons` is routed by `odoo-router` too, to whichever internal
   template — it has no tenant identity either way.
+- Both internal Job Templates carry `notification_templates_error:
+  [awx_failure_notification_template_name]` (default
+  `deploy-odoo-failures`) — this role does **not** create that Notification
+  Template object itself (see "Manual steps"). Deliberately not attached to
+  `odoo-router`/the WFJT, which would just double-fire the same alert for
+  every failure the internal template already surfaced.
 
 Run `ansible-playbook awx-setup.yml` (with `CONTROLLER_HOST`+
 `CONTROLLER_OAUTH_TOKEN` or `CONTROLLER_USERNAME`/`CONTROLLER_PASSWORD` set)
-to create/update the WFJT + 3 Job Templates + their shared survey
+to create/update the WFJT + 3 Job Templates + the nightly
+`check-snapshot-freshness` Schedule + their shared survey
 (`roles/configure-awx`) — it does **not** create the AWX Project,
-Inventory, or machine/vault credentials it references by name; those are
-one-time manual setup (see "Migrating from the slice model"). `odoo-router`
-additionally needs an AWX API token credential attached (injects
-`CONTROLLER_HOST`/`CONTROLLER_OAUTH_TOKEN` for its own `awx.awx.job_launch`
-call at runtime).
+Inventory, machine/vault credentials, or Notification Template it
+references by name; those are one-time manual setup (see "Migrating from
+the slice model"). `odoo-router` additionally needs an AWX API token
+credential attached (injects `CONTROLLER_HOST`/`CONTROLLER_OAUTH_TOKEN` for
+its own `awx.awx.job_launch` call at runtime).
 
 The survey (same fields on all 3 Job Templates + the WFJT) matches the
 "Input contract" table above, plus `plan_spec_json` as the manual-run
@@ -405,15 +420,30 @@ does). Retention and a periodic restore-test are the app's/ops'
 responsibility against the MinIO `snapshots` bucket layout below — this
 role provides the mechanism (`backup`/`restore`), not the policy.
 
+`check-snapshot-freshness` takes no tenant identity at all, so — unlike
+backup — it genuinely fits AWX's own `Schedule`: `awx-setup.yml` reconciles
+one, `{{ awx_snapshot_freshness_schedule_name }}` (default
+`odoo-snapshot-freshness-check-nightly`), bound to the `odoo-tenant` WFJT
+with fixed `extra_data: {odoo_action: check-snapshot-freshness}` and an
+`{{ awx_snapshot_freshness_rrule }}` iCal RRULE (default: nightly). It goes
+through the same router/notification path as every app-launched call, so a
+stale-snapshot condition and an actual `backup` Job crash alert through the
+identical Notification Template.
+
 Backups & Restore
 -------------------
 Snapshots land in the platform MinIO's `snapshots` bucket, pathed
-`snapshots/{customer}/{instance}/{daily|adhoc}/{timestamp}/`. `backup`
-(`pg_dump` + filestore tar) and `restore` (the inverse, fenced by
-REVOKE/GRANT around the pool role rather than the old "scale Odoo to 0" —
-there is no per-tenant process to scale in the pool model) are both
-deliberate ops actions in this role, not dynamic policy — see "Scheduled
-operations" for how iteration across tenants actually happens.
+`snapshots/{customer}/{instance}/{daily|adhoc}/{timestamp}/`, under the
+**scoped** `xayma.snapshots` MinIO user (Get/Put/Delete objects + list the
+`snapshots` bucket only — no admin API, no access to `uploads`/`backups`;
+see "Vault"). `backup` (`pg_dump` + filestore tar) and `restore` (the
+inverse, fenced by REVOKE/GRANT around the pool role rather than the old
+"scale Odoo to 0" — there is no per-tenant process to scale in the pool
+model) are both deliberate ops actions in this role, not dynamic policy —
+see "Scheduled operations" for how iteration across tenants actually
+happens. `check-snapshot-freshness` (`snapshot_freshness.max_age_hours`,
+default 30) independently verifies every live, non-stopped tenant actually
+has one — see "Observability"/"Scheduled operations".
 
 Versions
 --------
@@ -424,7 +454,8 @@ image is `{odoo_image_repo}:{version}.0` — see "Requirements" for why
 `16.6-bookworm` (ONE shared StatefulSet), PgBouncer `1.23.1-p2`
 (`edoburu/pgbouncer`), Redis `7.4.1-alpine3.20`, postgres-exporter
 `v0.16.0`, `busybox` (suspend-backend + every initContainer config merge),
-`rclone` (restore/backup Jobs), `git` (sync-addons Job). Never `latest`.
+`rclone` (restore/backup/check-snapshot-freshness Jobs), `git` (sync-addons
+Job). Never `latest`.
 
 Vault
 -----
@@ -436,8 +467,13 @@ fixed-platform-role credential this role creates once for the whole tier:
 the Postgres superuser, `pgadmin_ro`/`backup_ro`, PgBouncer's `auth_query`
 role, `pg_exporter`, and Redis's `requirepass` — each
 `hash('sha256', seed ~ '|' ~ role_name)`), plus
-`vault_odoo_minio_access_key`/`vault_odoo_minio_secret_key` (platform MinIO
-access for `backup`/`restore`). See
+`vault_odoo_snapshot_access_key`/`vault_odoo_snapshot_secret_key` — the
+platform MinIO's **scoped** `xayma.snapshots` user (Get/Put/Delete objects +
+list the `snapshots` bucket only, no admin API, no access to `uploads`/
+`backups`) for `backup`/`restore`/`check-snapshot-freshness`, **not** the
+platform root user (`xayma.admin`). The secret value lives in
+`install-platform.xayma.sh`'s vault today (`vault_minio_snapshots_password`)
+and must be copied here manually — see "Manual steps". See
 `defaults/main/02-credentials.yml.example` to (re)create it.
 
 Known caveats
@@ -629,7 +665,10 @@ snapshot layout is unchanged) rather than expecting any in-place upgrade.
 4. **New actions**: `change-plan` (move a tenant to a different plan, same
    version), `apply-plan` (pool-scoped — resize an existing pool for every
    tenant on it, admin-only), `backup` (on-demand single-tenant backup, for
-   the app's own nightly scheduler — see "Scheduled operations").
+   the app's own nightly scheduler — see "Scheduled operations"),
+   `check-snapshot-freshness` (namespace-scoped, no tenant identity, AWX
+   Schedule-driven — an independent backstop, not something the app needs to
+   call itself).
 5. **`restart` semantics changed.** It used to restart the tenant's own
    Deployment+StatefulSet pods. It now only terminates that tenant's DB
    backends and purges its Redis sessions — there is no per-tenant process
@@ -651,6 +690,22 @@ snapshot layout is unchanged) rather than expecting any in-place upgrade.
 
 - [x] **Vault**: `vault_odoo_platform_password` — done (added to the
       encrypted `defaults/main/02-credentials.yml`).
+- [ ] **Vault**: `vault_odoo_snapshot_access_key`/`vault_odoo_snapshot_secret_key`
+      — copy the real value from `install-platform.xayma.sh`'s vault
+      (`vault_minio_snapshots_password`; access key is `xayma.snapshots`)
+      into this repo's vault: `ansible-vault edit
+      roles/deploy-odoo/defaults/main/02-credentials.yml
+      --vault-password-file vault_password`. Confirm out of band that the
+      platform side has already created the `xayma.snapshots` MinIO
+      user/policy and the `snapshots` bucket — this repo does not and
+      should not create either.
+- [ ] **AWX Notification Template**: create one (Access → Notifications →
+      Add) for backup/snapshot-freshness failure alerts, default name
+      `deploy-odoo-failures` (`awx_failure_notification_template_name`) —
+      `configure-awx` attaches it to both internal Job Templates
+      automatically, it just needs the object to exist. Trigger a
+      deliberate failure once (e.g. a temporarily wrong vault value) and
+      confirm it actually fires before relying on it.
 - [ ] **Addons PVC population**: the shared `odoo-addons` PVC starts
       empty. Run `odoo_action=sync-addons -e addons_repo_url=<git URL>`
       (after at least one `deploy`, which bootstraps the PVC) before
@@ -696,7 +751,9 @@ snapshot layout is unchanged) rather than expecting any in-place upgrade.
          `odoo-lifecycle-internal`, `odoo-provision-internal`,
          `odoo-router` (with the API token credential from step 5
          attached), and the `odoo-tenant` WFJT (with its one node wired to
-         `odoo-router`) — plus the shared survey on all of them. It's
+         `odoo-router`) — plus the shared survey on all of them, the
+         `notification_templates_error` attachment on both internal
+         templates, and the nightly `check-snapshot-freshness` Schedule. It's
          idempotent; re-run it any time `roles/configure-awx/defaults`
          changes (e.g. a new survey field).
       7. Point the calling app at `odoo-tenant`'s WFJT ID — find it in the
