@@ -1,16 +1,17 @@
 ---
-# Reconciles the AWX router pattern (WFJT + internal Job Templates - see
-# roles/configure-awx and README "AWX"). Separate from site.yml on purpose:
-# this targets the AWX API, not the k3s cluster - a different credential
-# (AWX admin auth, via CONTROLLER_HOST/CONTROLLER_USERNAME/
-# CONTROLLER_PASSWORD or CONTROLLER_OAUTH_TOKEN env vars - the awx.awx
-# collection's own connection convention) and a different inventory
-# (localhost, since awx.awx modules just call the AWX REST API).
+# Reconciles the single app-facing Job Template `odoo-tenant` plus its
+# nightly check-snapshot-freshness Schedule (see roles/configure-awx and
+# README "AWX"). Separate from site.yml on purpose: this targets the AWX
+# API, not the k3s cluster - a different credential (AWX admin auth, via
+# CONTROLLER_HOST/CONTROLLER_USERNAME/CONTROLLER_PASSWORD or
+# CONTROLLER_OAUTH_TOKEN env vars - the awx.awx collection's own connection
+# convention) and a different inventory (localhost, since awx.awx modules
+# just call the AWX REST API).
 #
 #   export CONTROLLER_HOST=https://awx.internal
 #   export CONTROLLER_OAUTH_TOKEN=...
 #   ansible-playbook awx-setup.yml
-- name: Reconcile the AWX router pattern (WFJT + internal Job Templates)
+- name: Reconcile the odoo-tenant Job Template and its nightly Schedule
   hosts: localhost
   connection: local
   gather_facts: false

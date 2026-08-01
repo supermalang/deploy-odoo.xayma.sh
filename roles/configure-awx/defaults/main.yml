@@ -11,42 +11,32 @@ awx_project_name: "deploy-odoo.xayma.sh"
 awx_inventory_name: "xayma-platform"
 awx_machine_credential_name: "xayma-platform-ssh"
 awx_vault_credential_name: "deploy-odoo-vault"
-# Attached ONLY to odoo-router - injects CONTROLLER_HOST/CONTROLLER_OAUTH_TOKEN
-# so awx-router.yml's awx.awx.job_launch/job_wait calls can reach the AWX API
-# at RUNTIME (a separate concern from the env vars this role itself needs
-# at PROVISIONING time, above).
-awx_controller_credential_name: "awx-api-token"
 
 # This role does NOT create this object either - create a Notification
 # Template (Slack/email/PagerDuty/whatever channel) once in the AWX UI under
 # this name, or override the default to match one you already have. Attached
-# to the two INTERNAL Job Templates only (see tasks/main.yml) - not to
-# odoo-router/the WFJT, which would just double-fire the same alert for
-# every failure they already surface.
+# directly to the one Job Template below (see tasks/main.yml).
 awx_failure_notification_template_name: "deploy-odoo-failures"
 
-awx_wfjt_name: odoo-tenant
-awx_lifecycle_jt_name: odoo-lifecycle-internal
-awx_provision_jt_name: odoo-provision-internal
-awx_router_jt_name: odoo-router
+# The single app-facing launch target - see tasks/main.yml's header comment
+# for why this is one Job Template (allow_simultaneous: false), not a
+# Workflow Job Template routing to separate fast/slow Job Templates.
+awx_job_template_name: odoo-tenant
 
 # odoo_action=check-snapshot-freshness takes no tenant identity at all, so -
 # unlike backup, which needs the app to loop per tenant - it's a genuine fit
-# for AWX's own Schedule (fixed extra_vars against ONE Job Template; see
-# README "Scheduled operations"). Bound to the WFJT (not directly to
-# odoo-provision-internal) so it goes through the same router/notification
-# path as every app-launched call.
+# for AWX's own Schedule (fixed extra_vars against the one Job Template; see
+# README "Scheduled operations").
 awx_snapshot_freshness_schedule_name: "odoo-snapshot-freshness-check-nightly"
 # iCal RRULE - DTSTART is just a time-of-day anchor (iCal recurrence, not a
 # "start after this date" gate), any past date works. Override to change
 # the schedule's time-of-day/frequency.
 awx_snapshot_freshness_rrule: "DTSTART:20260101T033000Z RRULE:FREQ=DAILY;INTERVAL=1"
 
-# Shared survey fields every entry-point Job Template exposes - the router
-# and both internal templates all take the SAME extra_vars contract (see
-# main README "Input contract"). `plan_spec_json` is the ONE manual-run
-# fallback for plan_spec (a JSON string, parsed by
-# deploy-odoo's tasks/_resolve-plan-spec.yml).
+# The one Job Template's survey - matches the extra_vars contract in main
+# README "Input contract". `plan_spec_json` is the ONE manual-run fallback
+# for plan_spec (a JSON string, parsed by deploy-odoo's
+# tasks/_resolve-plan-spec.yml).
 awx_survey_spec:
   description: "deploy-odoo tenant/pool lifecycle contract"
   spec:

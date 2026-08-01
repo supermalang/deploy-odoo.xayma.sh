@@ -5,10 +5,10 @@ This role deploys and manages a **shared multi-tenant pool** of Odoo
 instances as Kubernetes workloads on the Xayma.sh Platform's single-node
 **k3s** cluster (the `install-platform.xayma.sh` repo — Traefik v3 +
 cert-manager + `kubernetes.core`). It is intended to run as an AWX job
-launched by the Xayma app (via the `odoo-tenant` Workflow Job Template — see
-"AWX" below), which passes identity vars plus a resolved `plan`+`plan_spec`
-as `extra_vars`. It can also be run from the CLI for manual/testing use
-(role defaults provide sane fallbacks — see "Plan resolution").
+launched by the Xayma app (via the `odoo-tenant` Job Template — see "AWX"
+below), which passes identity vars plus a resolved `plan`+`plan_spec` as
+`extra_vars`. It can also be run from the CLI for manual/testing use (role
+defaults provide sane fallbacks — see "Plan resolution").
 
 ```bash
 ansible-playbook site.yml -i production \
@@ -249,8 +249,8 @@ identity at all.
 Actions
 -------
 Dispatch is driven by a single `odoo_action` extra-var (not `--tags` — AWX
-surveys set `extra_vars`, so a single WFJT + survey can drive every action
-below). The role fails fast with a clear message if `odoo_action` is
+surveys set `extra_vars`, so a single Job Template + survey can drive every
+action below). The role fails fast with a clear message if `odoo_action` is
 missing or not one of these values.
 
 This role is **strictly tenant-scoped** for every action except
@@ -258,7 +258,8 @@ This role is **strictly tenant-scoped** for every action except
 (namespace-scoped): every other action operates on exactly one tenant, never
 more. Customer-level operations (e.g. suspending every tenant for a customer
 that hasn't paid) are orchestrated by the Xayma app, which loops the
-tenant-scoped WFJT over every active tenant belonging to that customer.
+tenant-scoped Job Template over every active tenant belonging to that
+customer.
 
 | `odoo_action` | Scope | Description |
 |-----|-------|-------------|
@@ -365,70 +366,99 @@ otherwise-silent case of a tenant whose `backup` stops being invoked at all
 
 AWX
 ---
-The calling app knows exactly **one** launch target: the Workflow Job
-Template `odoo-tenant` (`allow_simultaneous: true` — it only routes).
-Running `ansible-playbook awx-setup.yml` reconciles this WFJT plus the
-Job Templates below plus their shared survey — nothing else is needed to
-make the extra templates appear; see "Migrating from the slice model" for
-the prerequisites that setup itself relies on (Project/Inventory/credentials).
+The calling app knows exactly **one** launch target: the Job Template
+`odoo-tenant` (`allow_simultaneous: false` — every `odoo_action`, for every
+tenant, serializes through this one queue; see "Concurrency" below for why).
+Running `ansible-playbook awx-setup.yml` reconciles this Job Template plus
+its shared survey plus the nightly `check-snapshot-freshness` Schedule —
+nothing else is needed; see "Migrating from the slice model" for the
+prerequisites that setup itself relies on (Project/Inventory/credentials).
 
-- AWX Workflow nodes can only branch on a node's **success/failure**, never
-  on an extra_var's value, so the "router" is implemented imperatively: the
-  WFJT has one node pointing at `odoo-router` (playbook `awx-router.yml`),
-  which calls the AWX API to launch whichever internal Job Template owns
-  the received `odoo_action`, waits for it, and surfaces its status back to
-  the WFJT.
-- `odoo-lifecycle-internal` (`allow_simultaneous: false`) — `start`/`stop`/
-  `suspend`/`restart`/`edit-domain`/`change-plan`/`apply-plan` (fast).
-- `odoo-provision-internal` (`allow_simultaneous: false`) — `deploy`/
-  `delete`/`restore`/`backup`/`check-snapshot-freshness` (slow).
-- Cross-queue safety = per-tenant Job-name mutexes (`init-{slug}`, etc.) +
-  the state asserts already in the playbook — `odoo-router` itself is
-  `allow_simultaneous: true` since it does no cluster work.
-- `sync-addons` is routed by `odoo-router` too, to whichever internal
-  template — it has no tenant identity either way.
-- Both internal Job Templates carry `notification_templates_error:
-  [awx_failure_notification_template_name]` (default
-  `deploy-odoo-failures`) — this role does **not** create that Notification
-  Template object itself (see "Manual steps"). Deliberately not attached to
-  `odoo-router`/the WFJT, which would just double-fire the same alert for
-  every failure the internal template already surfaced.
+- `odoo-tenant` runs `site.yml` directly against every `odoo_action`,
+  including `sync-addons` (no tenant identity) and
+  `check-snapshot-freshness` (namespace-scoped) — dispatch between actions
+  happens entirely inside the playbook (`roles/deploy-odoo/tasks/main.yml`'s
+  `when: odoo_action == '...'` chain), not in AWX.
+- Carries `notification_templates_error: [awx_failure_notification_template_name]`
+  (default `deploy-odoo-failures`) directly — this role does **not** create
+  that Notification Template object itself (see "Manual steps").
 
 Run `ansible-playbook awx-setup.yml` (with `CONTROLLER_HOST`+
 `CONTROLLER_OAUTH_TOKEN` or `CONTROLLER_USERNAME`/`CONTROLLER_PASSWORD` set)
-to create/update the WFJT + 3 Job Templates + the nightly
-`check-snapshot-freshness` Schedule + their shared survey
-(`roles/configure-awx`) — it does **not** create the AWX Project,
-Inventory, machine/vault credentials, or Notification Template it
-references by name; those are one-time manual setup (see "Migrating from
-the slice model"). `odoo-router` additionally needs an AWX API token
-credential attached (injects `CONTROLLER_HOST`/`CONTROLLER_OAUTH_TOKEN` for
-its own `awx.awx.job_launch` call at runtime).
+to create/update the Job Template + its survey + the nightly
+`check-snapshot-freshness` Schedule (`roles/configure-awx`) — it does
+**not** create the AWX Project, Inventory, machine/vault credentials, or
+Notification Template it references by name; those are one-time manual
+setup (see "Migrating from the slice model").
 
-The survey (same fields on all 3 Job Templates + the WFJT) matches the
-"Input contract" table above, plus `plan_spec_json` as the manual-run
-fallback for `plan_spec`.
+The survey matches the "Input contract" table above, plus `plan_spec_json`
+as the manual-run fallback for `plan_spec`.
+
+### Concurrency
+
+`odoo-tenant` is deliberately a single Job Template with
+`allow_simultaneous: false`, not a Workflow Job Template routing to
+separate per-action-class Job Templates. An earlier revision of this role
+split "fast" (`start`/`stop`/.../`apply-plan`) and "slow"
+(`deploy`/`delete`/`restore`/`backup`/`check-snapshot-freshness`) actions
+into two independently-queued internal Job Templates behind a WFJT
+router, so a long `deploy` for one tenant couldn't block a quick `stop` for
+another. That indirection was removed — this deployment doesn't need the
+extra throughput, and it's simpler to reason about one queue than a
+WFJT + router playbook (`awx.awx.job_launch`/`job_wait` calling the AWX API
+from *inside* an AWX job) + two internal templates.
+
+The one queue is not incidental — it's the only thing standing in for real
+per-tenant/per-pool locking today. Several task sequences in
+`roles/deploy-odoo` read live cluster state, decide something, then write
+it back, with no lock of their own:
+- `_sync-pgbouncer-tenants.yml` rebuilds the *entire* PgBouncer tenant
+  ConfigMap from live IngressRoute state on every call; a brand-new
+  tenant's entry (injected via an overlay var, since its own IngressRoute
+  isn't live yet) can be silently dropped if another tenant's deploy reads
+  cluster state and writes the ConfigMap in the same window.
+- `_resolve-pool.yml`'s create-only pool bootstrap checks "does this pool
+  exist" then creates it if not — two tenants simultaneously first onto the
+  same brand-new `(version, plan)` pool could both pass that check with
+  different `plan_spec` overrides, and whichever apply lands second wins
+  silently (the "frozen spec, ignoring mismatched keys" warning never
+  fires, since neither call saw the pool as already existing).
+- `change-plan.yml`/`delete-tenant.yml` count a pool's remaining tenants
+  via live IngressRoute labels before deciding whether to scale it to 0;
+  two tenants leaving the same pool at once can each see the other as
+  "remaining" and neither triggers the scale-down.
+- Nothing fences a *double-fire* against the same tenant (e.g. an
+  accidental duplicate `stop`+`start`) — whichever call finishes last wins,
+  and a multi-step state transition can interleave into a combination no
+  single call would ever produce.
+
+None of this is Ansible/Kubernetes handling it for you — it only doesn't
+happen today because `allow_simultaneous: false` never lets two of these
+sequences run at the same instant. If this Job Template is ever switched to
+`allow_simultaneous: true` (or split back into multiple queues) for
+throughput, real locking needs to go in for the sequences above first, not
+as an afterthought.
 
 ### Scheduled operations
 
 AWX `Schedule` objects bind to **one** Job Template with **fixed**
 `extra_vars` — they cannot loop over tenants. Nightly backups therefore
-stay **app-driven**: the Xayma app's own scheduler calls the WFJT once per
-active tenant on its nightly trigger (consistent with how customer-scope
-operations already work in this role — the app loops, the role never
-does). Retention and a periodic restore-test are the app's/ops'
+stay **app-driven**: the Xayma app's own scheduler calls `odoo-tenant` once
+per active tenant on its nightly trigger (consistent with how
+customer-scope operations already work in this role — the app loops, the
+role never does). Retention and a periodic restore-test are the app's/ops'
 responsibility against the MinIO `snapshots` bucket layout below — this
 role provides the mechanism (`backup`/`restore`), not the policy.
 
 `check-snapshot-freshness` takes no tenant identity at all, so — unlike
 backup — it genuinely fits AWX's own `Schedule`: `awx-setup.yml` reconciles
 one, `{{ awx_snapshot_freshness_schedule_name }}` (default
-`odoo-snapshot-freshness-check-nightly`), bound to the `odoo-tenant` WFJT
+`odoo-snapshot-freshness-check-nightly`), bound directly to `odoo-tenant`
 with fixed `extra_data: {odoo_action: check-snapshot-freshness}` and an
 `{{ awx_snapshot_freshness_rrule }}` iCal RRULE (default: nightly). It goes
-through the same router/notification path as every app-launched call, so a
-stale-snapshot condition and an actual `backup` Job crash alert through the
-identical Notification Template.
+through the same Job Template/Notification Template path as every
+app-launched call, so a stale-snapshot condition and an actual `backup` Job
+crash alert through the identical Notification Template.
 
 Backups & Restore
 -------------------
@@ -652,11 +682,11 @@ snapshot layout is unchanged) rather than expecting any in-place upgrade.
    plus `plan_spec` (the full nested dict — see "Plan resolution" for the
    schema and the pool-scoped/tenant-scoped split) as a real JSON
    extra_var over the AWX API. There is no flat-field equivalent anymore.
-2. **Single launch target, but a new name.** The app now calls the
-   Workflow Job Template `odoo-tenant` (previously the app called this
-   role's own instance-scoped Job Template directly) — same extra_vars
-   contract otherwise. If the app hardcoded the old Job Template's numeric
-   ID, it needs the new WFJT's ID instead (see "Manual steps" below).
+2. **Single launch target, but a new name.** The app now calls the Job
+   Template `odoo-tenant` instead of this role's old instance-scoped Job
+   Template — same extra_vars contract otherwise. If the app hardcoded the
+   old Job Template's numeric ID, it needs `odoo-tenant`'s ID instead (see
+   "Manual steps" below).
 3. **`version` is no longer sent on every lifecycle call.** Only
    `deploy`/`change-plan`/`apply-plan` take `version`. Every other action
    (`start`/`stop`/`suspend`/`restart`/`edit-domain`/`delete`/`backup`/
@@ -705,7 +735,7 @@ snapshot layout is unchanged) rather than expecting any in-place upgrade.
 - [ ] **AWX Notification Template**: create one (Access → Notifications →
       Add) for backup/snapshot-freshness failure alerts, default name
       `deploy-odoo-failures` (`awx_failure_notification_template_name`) —
-      `configure-awx` attaches it to both internal Job Templates
+      `configure-awx` attaches it to the `odoo-tenant` Job Template
       automatically, it just needs the object to exist. Trigger a
       deliberate failure once (e.g. a temporarily wrong vault value) and
       confirm it actually fires before relying on it.
@@ -715,8 +745,8 @@ snapshot layout is unchanged) rather than expecting any in-place upgrade.
       deploying any tenant whose `init_modules` needs anything beyond
       Odoo's own bundled modules — including `session_redis` itself, which
       is mandatory.
-- [ ] **AWX one-time setup** — `roles/configure-awx` only *reconciles*
-      Job/Workflow Templates; it assumes an AWX Project, Inventory, and two
+- [ ] **AWX one-time setup** — `roles/configure-awx` only *reconciles* the
+      Job Template; it assumes an AWX Project, Inventory, and two
       credentials already exist (by the exact names in
       `roles/configure-awx/defaults/main.yml`, or override those defaults
       to match names you already use):
@@ -733,15 +763,7 @@ snapshot layout is unchanged) rather than expecting any in-place upgrade.
       4. **Vault credential** (Access → Credentials → Add, type *Vault*)
          holding this repo's vault password, default name
          `deploy-odoo-vault` (`awx_vault_credential_name`).
-      5. **AWX API token credential** — first mint a personal access token
-         (Access → Users → *your user* → Tokens → Add), then create a
-         credential of type *Red Hat Ansible Automation Platform*
-         (sometimes labelled *Controller*/*AWX*) using that token, default
-         name `awx-api-token` (`awx_controller_credential_name`). This is
-         the one `odoo-router` needs at runtime to call the AWX API and
-         launch the right internal Job Template — `configure-awx` attaches
-         it automatically, you just need the credential object to exist.
-      6. Install collections and run the setup playbook itself **against
+      5. Install collections and run the setup playbook itself **against
          the AWX API** (not the k3s cluster — different creds, different
          target):
          ```
@@ -750,18 +772,14 @@ snapshot layout is unchanged) rather than expecting any in-place upgrade.
          export CONTROLLER_OAUTH_TOKEN=<a token with rights to create/edit templates>
          ansible-playbook awx-setup.yml
          ```
-         This creates/updates all 4 Job/Workflow Templates in one pass:
-         `odoo-lifecycle-internal`, `odoo-provision-internal`,
-         `odoo-router` (with the API token credential from step 5
-         attached), and the `odoo-tenant` WFJT (with its one node wired to
-         `odoo-router`) — plus the shared survey on all of them, the
-         `notification_templates_error` attachment on both internal
-         templates, and the nightly `check-snapshot-freshness` Schedule. It's
-         idempotent; re-run it any time `roles/configure-awx/defaults`
-         changes (e.g. a new survey field).
-      7. Point the calling app at `odoo-tenant`'s WFJT ID — find it in the
-         AWX UI (Templates → `odoo-tenant`) or via
-         `GET /api/v2/workflow_job_templates/?name=odoo-tenant`.
+         This creates/updates the `odoo-tenant` Job Template (survey +
+         `notification_templates_error` attached) and the nightly
+         `check-snapshot-freshness` Schedule bound to it. It's idempotent;
+         re-run it any time `roles/configure-awx/defaults` changes (e.g. a
+         new survey field).
+      6. Point the calling app at `odoo-tenant`'s Job Template ID — find it
+         in the AWX UI (Templates → `odoo-tenant`) or via
+         `GET /api/v2/job_templates/?name=odoo-tenant`.
 - [x] **Wildcard Certificate / DNS-01**: done —
       `install-platform.xayma.sh` provides `letsencrypt-dns01-production`,
       and `wildcard_cluster_issuer` points at it by default.
