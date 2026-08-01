@@ -23,15 +23,27 @@ spec:
       restartPolicy: Never
       priorityClassName: {{ priorityclass.name }}
       initContainers:
+        # bash, NOT sh: this needs `pipefail`, which dash (the image's
+        # /bin/sh) does not implement. Without it `pg_dump | gzip > file`
+        # reports gzip's exit status, so a failed dump still "succeeds" and
+        # writes a ~20-byte empty gzip that rclone then happily uploads -
+        # see odoo.backup.min_dump_bytes in 01-deploy-odoo-defaults.yml.
         - name: pg-dump
           image: postgres:{{ versions.postgres }}
           command:
-            - sh
+            - /bin/bash
             - -c
-            - >-
-              set -eu;
-              PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h {{ pg_target }} -U postgres {{ instance_slug }}
-              | gzip > /backup/db.sql.gz
+            - |-
+              set -euo pipefail
+              out=/backup/db.sql.gz
+              PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h {{ pg_target }} -U postgres {{ instance_slug }} | gzip > "$out"
+              size=$(stat -c %s "$out")
+              if [ "$size" -lt {{ odoo.backup.min_dump_bytes }} ]; then
+                echo "FATAL: dump is ${size}B, under the {{ odoo.backup.min_dump_bytes }}B floor - treating as failed" >&2
+                rm -f "$out"
+                exit 1
+              fi
+              echo "dump OK: $out (${size}B)"
           env:
             - name: POSTGRES_PASSWORD
               valueFrom:
@@ -40,15 +52,30 @@ spec:
                   key: POSTGRES_PASSWORD
           volumeMounts:
             - {name: backup, mountPath: /backup}
+        # No pipe here (tar writes the gzip itself), so this was never
+        # subject to the pipefail bug above - `set -eu` already fails the
+        # container on a real tar error. Still floored on size: a genuinely
+        # empty filestore's tar.gz is ~110B (tar's null trailer survives
+        # gzip), so odoo.backup.min_filestore_bytes only needs to catch a
+        # totally-empty/truncated archive (~20B), not flag real-but-empty
+        # tenants as failures.
         - name: filestore-tar
           image: busybox:{{ versions.busybox }}
           command:
             - sh
             - -c
-            - >-
-              set -eu;
-              mkdir -p /filestore/{{ instance_slug }};
-              tar czf /backup/filestore.tar.gz -C /filestore/{{ instance_slug }} .
+            - |-
+              set -eu
+              mkdir -p /filestore/{{ instance_slug }}
+              out=/backup/filestore.tar.gz
+              tar czf "$out" -C /filestore/{{ instance_slug }} .
+              size=$(stat -c %s "$out")
+              if [ "$size" -lt {{ odoo.backup.min_filestore_bytes }} ]; then
+                echo "FATAL: filestore archive is ${size}B, under the {{ odoo.backup.min_filestore_bytes }}B floor - treating as failed" >&2
+                rm -f "$out"
+                exit 1
+              fi
+              echo "filestore archive OK: $out (${size}B)"
           volumeMounts:
             - {name: filestore, mountPath: /filestore}
             - {name: backup, mountPath: /backup}

@@ -111,13 +111,16 @@ odoo:
   addons_storage: 5Gi
 
   # Platform MinIO (internal, snapshot target for backup/restore) - endpoint/
-  # bucket match install-platform.xayma.sh's deploy-databases/deploy-platform-storage,
-  # but the credential is the scoped `xayma.snapshots` user, NOT the platform
-  # root user - it can only Get/Put/Delete objects and list this one bucket.
+  # bucket match install-platform.xayma.sh's deploy-minio role (one MinIO,
+  # in xayma-storage), but the credential is the scoped `xayma.snapshots`
+  # user, NOT the platform root user - it can only Get/Put/Delete objects
+  # and list this one bucket.
   storage_namespace: xayma-storage
   snapshot_bucket: snapshots
   snapshot_endpoint: "http://minio.xayma-storage.svc:9000"
-  snapshot_access_key: "{{ vault_odoo_snapshot_access_key }}"
+  # A fixed identity, not a secret - deliberately a plain default, not
+  # vaulted (see 02-credentials.yml.example for why).
+  snapshot_access_key: "xayma.snapshots"
   snapshot_secret_key: "{{ vault_odoo_snapshot_secret_key }}"
 
   # odoo_action=sync-addons (git pull onto the addons PVC). No default repo
@@ -125,12 +128,35 @@ odoo:
   # since it is credential-adjacent - see tasks/sync-addons.yml.
   addons_repo_ref: main
 
+  # Integrity guards for odoo_action=backup (templates/job-backup.yaml.j2) -
+  # `sh` is dash, which has no `pipefail`, so `pg_dump | gzip > file` used to
+  # report gzip's exit status: a failed pg_dump still produced a "successful"
+  # ~20-byte empty gzip that rclone then happily uploaded. The dump script now
+  # runs under bash with `set -euo pipefail` AND stats its own output against
+  # this floor, deleting + failing rather than letting a too-small dump reach
+  # MinIO. The identical bug silently replaced every nightly Postgres backup
+  # in install-platform.xayma.sh between 2026-07-26 and 2026-08-01 - see that
+  # repo's deploy-databases role for the fix this one is ported from.
+  backup:
+    min_dump_bytes: 1024
+    # A legitimate empty-filestore tenant's tar.gz is ~110 bytes (tar's
+    # trailing null blocks survive gzip); a totally empty/failed gzip stream
+    # is 20 bytes. This floor only needs to sit between the two.
+    min_filestore_bytes: 64
+
 # odoo_action=check-snapshot-freshness (tasks/check-snapshot-freshness.yml) -
 # how stale a tenant's newest daily snapshot may be before the check fails
 # (surfaced as an AWX Job failure -> the notification_templates_error wired
 # in roles/configure-awx). One nightly cycle plus slack.
+#
+# max_age_hours only proves a snapshot is RECENT, not that it is VALID - a
+# ~20-byte empty dump from the pipefail bug above would still pass this
+# check. min_dump_bytes/min_filestore_bytes close that blind spot by having
+# the freshness Job also assert object size (rclone lsl), not just recency.
 snapshot_freshness:
   max_age_hours: 30
+  min_dump_bytes: 1024
+  min_filestore_bytes: 64
 
 # Shared Postgres sizing (ONE StatefulSet for the whole tier - not a plan_*
 # concern; see pg_topology above).

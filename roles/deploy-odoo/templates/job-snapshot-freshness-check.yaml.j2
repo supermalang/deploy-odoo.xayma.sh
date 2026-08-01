@@ -7,6 +7,13 @@
 # snapshot_freshness.max_age_hours. This is the independent backstop for a
 # tenant whose backup Job silently stops being invoked at all (a Job-failure
 # notification never fires for a Job that never ran).
+#
+# Recency alone is NOT validity: a ~20-byte empty gzip from job-backup's
+# pipefail bug (see 01-deploy-odoo-defaults.yml's odoo.backup comment) would
+# still be "fresh" by this check's original definition. So this also stats
+# every recent object under each tenant's `daily/` prefix (`rclone lsl`, not
+# `lsf` - it reports size) and fails if a db.sql.gz/filestore.tar.gz found
+# there is under snapshot_freshness.min_dump_bytes/min_filestore_bytes.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -29,19 +36,47 @@ spec:
           command:
             - /bin/sh
             - -c
-            - >-
-              set -eu;
-              stale="";
+            - |-
+              set -eu
+              stale=""
+              invalid=""
+              listing_file=/tmp/freshness-listing
               for pair in {{ _freshness_tenant_pairs }}; do
-                customer="${pair%/*}";
-                instance="${pair#*/}";
-                if [ -z "$(rclone lsf snapshot:{{ odoo.snapshot_bucket }}/$customer/$instance/daily/ --max-age {{ snapshot_freshness.max_age_hours }}h --files-only -R)" ]; then
-                  echo "STALE: $customer/$instance has no daily snapshot newer than {{ snapshot_freshness.max_age_hours }}h";
-                  stale="$stale $pair";
-                fi;
-              done;
-              if [ -n "$stale" ]; then echo "Stale tenants:$stale"; exit 1; fi;
-              echo "All {{ _freshness_tenant_count }} tenant(s) have a fresh snapshot"
+                customer="${pair%/*}"
+                instance="${pair#*/}"
+                rclone lsl snapshot:{{ odoo.snapshot_bucket }}/$customer/$instance/daily/ --max-age {{ snapshot_freshness.max_age_hours }}h -R > "$listing_file" || true
+                if [ ! -s "$listing_file" ]; then
+                  echo "STALE: $customer/$instance has no daily snapshot newer than {{ snapshot_freshness.max_age_hours }}h"
+                  stale="$stale $pair"
+                  continue
+                fi
+                bad=""
+                while read -r size _date _time path; do
+                  case "$path" in
+                    */db.sql.gz)
+                      if [ "$size" -lt {{ snapshot_freshness.min_dump_bytes }} ]; then
+                        bad="$bad db.sql.gz(${size}B)"
+                      fi
+                      ;;
+                    */filestore.tar.gz)
+                      if [ "$size" -lt {{ snapshot_freshness.min_filestore_bytes }} ]; then
+                        bad="$bad filestore.tar.gz(${size}B)"
+                      fi
+                      ;;
+                  esac
+                done < "$listing_file"
+                if [ -n "$bad" ]; then
+                  echo "INVALID: $customer/$instance has an implausibly small recent snapshot -$bad"
+                  invalid="$invalid $pair"
+                fi
+              done
+              rm -f "$listing_file"
+              if [ -n "$stale" ] || [ -n "$invalid" ]; then
+                echo "Stale tenants:$stale"
+                echo "Invalid (undersized) tenants:$invalid"
+                exit 1
+              fi
+              echo "All {{ _freshness_tenant_count }} tenant(s) have a fresh, plausibly-sized snapshot"
           env:
             - {name: RCLONE_CONFIG_SNAPSHOT_TYPE, value: s3}
             - {name: RCLONE_CONFIG_SNAPSHOT_PROVIDER, value: Other}

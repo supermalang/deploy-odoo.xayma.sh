@@ -5,15 +5,17 @@
 # the old per-instance "scale Odoo to 0" - there is no per-tenant process to
 # scale in the pool model, so DB-level fencing is the whole story. No
 # scaling steps before/after (see README "Actions").
-- import_tasks: _recover-tenant.yml
-- import_tasks: _pg-connection.yml
+- name: Recover this tenant's current pool/state from live cluster facts
+  ansible.builtin.import_tasks: _recover-tenant.yml
+- name: Resolve the shared Postgres connection facts
+  ansible.builtin.import_tasks: _pg-connection.yml
 
 - name: Assert snapshot_id was provided
   ansible.builtin.assert:
     that: snapshot_id is defined and snapshot_id | length > 0
     fail_msg: "odoo_action=restore requires -e snapshot_id=<timestamp> (and optionally snapshot_kind=daily|adhoc)."
 
-- name: "[{{ tenant_name }}] REVOKE the pool role's CONNECT for the duration of the restore"
+- name: "REVOKE the pool role's CONNECT for the duration of the restore [{{ tenant_name }}]"
   community.postgresql.postgresql_privs:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -25,7 +27,7 @@
     roles: "{{ tenant_pg_role }}"
     state: absent
 
-- name: "[{{ tenant_name }}] Terminate any live backends on this tenant's database"
+- name: "Terminate any live backends on this tenant's database [{{ tenant_name }}]"
   community.postgresql.postgresql_query:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -35,7 +37,7 @@
     named_args:
       dbname: "{{ instance_slug }}"
 
-- name: "[{{ tenant_name }}] Apply the restore Job"
+- name: "Apply the restore Job [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -43,7 +45,7 @@
     template: job-restore.yaml.j2
   register: _restore_job
 
-- name: "[{{ tenant_name }}] Wait for the restore Job to complete"
+- name: "Wait for the restore Job to complete [{{ tenant_name }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Job
@@ -57,7 +59,7 @@
   retries: 120
   delay: 10
 
-- name: "[{{ tenant_name }}] Surface the restore Job's pod logs on failure"
+- name: "Surface the restore Job's pod logs on failure [{{ tenant_name }}]"
   kubernetes.core.k8s_log:
     kubeconfig: "{{ kubeconfig_path }}"
     namespace: "{{ xayma_namespace }}"
@@ -66,7 +68,7 @@
   register: _restore_job_logs
   when: _restore_job_status.resources[0].status.failed | default(0) | int > 0
 
-- name: "[{{ tenant_name }}] GRANT the pool role's CONNECT back"
+- name: "GRANT the pool role's CONNECT back [{{ tenant_name }}]"
   community.postgresql.postgresql_privs:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -78,7 +80,7 @@
     roles: "{{ tenant_pg_role }}"
     state: present
 
-- name: "[{{ tenant_name }}] Assert the restore Job succeeded"
+- name: "Assert the restore Job succeeded [{{ tenant_name }}]"
   ansible.builtin.assert:
     that: _restore_job_status.resources[0].status.succeeded | default(0) | int > 0
     fail_msg: >-

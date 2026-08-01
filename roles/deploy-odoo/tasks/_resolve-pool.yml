@@ -15,9 +15,10 @@
 # plan_spec sent by a normal deploy/change-plan NEVER silently resizes a
 # pool out from under its other tenants.
 
-- import_tasks: _ensure-odoo-image.yml
+- name: Ensure this pool's Odoo image exists in the registry
+  ansible.builtin.import_tasks: _ensure-odoo-image.yml
 
-- name: "[{{ pool_id }}] Check whether the pool already exists"
+- name: "Check whether the pool already exists [{{ pool_id }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Deployment
@@ -25,7 +26,7 @@
     name: "{{ pool_http_name }}"
   register: _pool_existing
 
-- name: "[{{ pool_id }}] Determine whether the pool-scoped spec should be (re)applied"
+- name: "Determine whether the pool-scoped spec should be (re)applied [{{ pool_id }}]"
   ansible.builtin.set_fact:
     _pool_apply_spec: >-
       {{ (_pool_existing.resources | length == 0)
@@ -35,7 +36,7 @@
              | selectattr('key', 'equalto', pool_spec_hash_annotation_key)
              | map(attribute='value') | list | first | default('')) == pool_spec_hash }}
 
-- name: "[{{ pool_id }}] Warn - incoming plan_spec differs from this pool's frozen spec, IGNORING pool-scoped keys"
+- name: "Warn - incoming plan_spec differs from this pool's frozen spec, IGNORING pool-scoped keys [{{ pool_id }}]"
   ansible.builtin.debug:
     msg: >-
       WARNING: pool {{ pool_id }} already exists with a DIFFERENT
@@ -47,7 +48,7 @@
       desired plan_spec.
   when: not (_pool_apply_spec | bool)
 
-- name: "[{{ pool_id }}] Apply the pool's PG role Secret"
+- name: "Apply the pool's PG role Secret [{{ pool_id }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -55,7 +56,8 @@
     template: pool-secret.yaml.j2
   no_log: true
 
-- import_tasks: _pg-connection.yml
+- name: Resolve the shared Postgres connection facts
+  ansible.builtin.import_tasks: _pg-connection.yml
 
 # One LOGIN role per pool (see README "PostgreSQL access model") - password
 # derived from the same vault-seed pattern as every other secret in this
@@ -67,7 +69,7 @@
 # `tenant_db_max_connections` job (see _sync-pgbouncer-tenants.yml);
 # `pool_spec.db_maxconn` is odoo.conf's own per-worker-process setting
 # (worker-side demand, not the fairness lever - see README).
-- name: "[{{ pool_id }}] Ensure the pool's PG LOGIN role exists"
+- name: "Ensure the pool's PG LOGIN role exists [{{ pool_id }}]"
   community.postgresql.postgresql_user:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -78,7 +80,7 @@
     role_attr_flags: LOGIN
   no_log: true
 
-- name: "[{{ pool_id }}] Apply the pool's odoo.conf ConfigMap (pool-scoped - create-only)"
+- name: "Apply the pool's odoo.conf ConfigMap (pool-scoped - create-only) [{{ pool_id }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -86,7 +88,7 @@
     template: pool-configmap.yaml.j2
   when: _pool_apply_spec | bool
 
-- name: "[{{ pool_id }}] Apply the pool's Deployments + Services (pool-scoped - create-only)"
+- name: "Apply the pool's Deployments + Services (pool-scoped - create-only) [{{ pool_id }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -94,7 +96,7 @@
     template: pool-deployments.yaml.j2
   when: _pool_apply_spec | bool
 
-- name: "[{{ pool_id }}] Apply the {pool}-http HorizontalPodAutoscaler (pool-scoped - create-only)"
+- name: "Apply the {pool}-http HorizontalPodAutoscaler (pool-scoped - create-only) [{{ pool_id }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -103,14 +105,14 @@
   when: _pool_apply_spec | bool
 
 # Not spec-derived (minAvailable: 1 is fixed) - always safe to reapply.
-- name: "[{{ pool_id }}] Apply the {pool}-http PodDisruptionBudget"
+- name: "Apply the {pool}-http PodDisruptionBudget [{{ pool_id }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
     namespace: "{{ xayma_namespace }}"
     template: pool-pdb.yaml.j2
 
-- name: "[{{ pool_id }}] Wait for the pool's Deployments to have at least 1 ready replica"
+- name: "Wait for the pool's Deployments to have at least 1 ready replica [{{ pool_id }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Deployment

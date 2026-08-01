@@ -3,7 +3,7 @@
 # see deploy-tenant.yml) - fails fast if any of tenant_spec.init_modules
 # isn't present in the shared addons PVC, rather than letting `odoo -i`
 # partially fail deep inside a batch-low Job.
-- name: "[{{ tenant_name }}] Run the addons-path module-existence check"
+- name: "Run the addons-path module-existence check [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -20,7 +20,7 @@
       echo OK
   register: _checkmod_job
 
-- name: "[{{ tenant_name }}] Wait for the module-existence check to complete"
+- name: "Wait for the module-existence check to complete [{{ tenant_name }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Job
@@ -34,7 +34,7 @@
   retries: 30
   delay: 3
 
-- name: "[{{ tenant_name }}] Fetch the module-existence check's output"
+- name: "Fetch the module-existence check's output [{{ tenant_name }}]"
   kubernetes.core.k8s_log:
     kubeconfig: "{{ kubeconfig_path }}"
     namespace: "{{ xayma_namespace }}"
@@ -42,7 +42,7 @@
       - "job-name={{ _checkmod_job.result.metadata.name }}"
   register: _checkmod_logs
 
-- name: "[{{ tenant_name }}] Delete the module-existence check Job"
+- name: "Delete the module-existence check Job [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: absent
@@ -51,7 +51,7 @@
     namespace: "{{ xayma_namespace }}"
     name: "{{ _checkmod_job.result.metadata.name }}"
 
-- name: "[{{ tenant_name }}] Assert every init_modules entry exists in the addons path"
+- name: "Assert every init_modules entry exists in the addons path [{{ tenant_name }}]"
   ansible.builtin.assert:
     that: "'MISSING' not in (_checkmod_logs.log | default(''))"
     fail_msg: >-

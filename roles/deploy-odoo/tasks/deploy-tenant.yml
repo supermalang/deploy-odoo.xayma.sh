@@ -5,26 +5,29 @@
 # NEVER re-runs against an already-initialized database (see the
 # "Determine whether the one-shot init Job must run" step below).
 
-- import_tasks: _ensure-platform.yml
-- import_tasks: _resolve-plan-spec.yml
-- import_tasks: _resolve-pool.yml
+- name: Ensure the shared platform singletons exist
+  ansible.builtin.import_tasks: _ensure-platform.yml
+- name: Resolve the effective plan_spec
+  ansible.builtin.import_tasks: _resolve-plan-spec.yml
+- name: Resolve (or create) this tenant's pool
+  ansible.builtin.import_tasks: _resolve-pool.yml
 
 # Fail fast, before any DB/Job work, if a requested custom_domain doesn't
 # actually point at this platform yet - otherwise cert-manager's ACME
 # HTTP-01 challenge would just hang. default_domain is used as the known-
 # good reference point (it always resolves correctly via the platform's
 # wildcard DNS once ANY tenant is live).
-- name: "[{{ tenant_name }}] Resolve the platform's edge IP (via the default host)"
+- name: "Resolve the platform's edge IP (via the default host) [{{ tenant_name }}]"
   ansible.builtin.set_fact:
     _deploy_platform_ip: "{{ lookup('community.general.dig', default_domain) }}"
   when: custom_domain | default('') | length > 0
 
-- name: "[{{ tenant_name }}] Resolve the requested custom domain"
+- name: "Resolve the requested custom domain [{{ tenant_name }}]"
   ansible.builtin.set_fact:
     _deploy_custom_domain_ip: "{{ lookup('community.general.dig', custom_domain) }}"
   when: custom_domain | default('') | length > 0
 
-- name: "[{{ tenant_name }}] Assert the custom domain points at this platform"
+- name: "Assert the custom domain points at this platform [{{ tenant_name }}]"
   ansible.builtin.assert:
     that: _deploy_custom_domain_ip == _deploy_platform_ip
     fail_msg: >-
@@ -34,7 +37,7 @@
       its DNS record at the platform before retrying.
   when: custom_domain | default('') | length > 0
 
-- name: "[{{ tenant_name }}] Check whether the tenant database exists"
+- name: "Check whether the tenant database exists [{{ tenant_name }}]"
   community.postgresql.postgresql_info:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -43,7 +46,7 @@
   register: _deploy_pg_info
   no_log: true
 
-- name: "[{{ tenant_name }}] Check whether the tenant database is already initialized"
+- name: "Check whether the tenant database is already initialized [{{ tenant_name }}]"
   community.postgresql.postgresql_query:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -58,13 +61,13 @@
 # Idempotency guard (see README "Actions"): db exists AND contains
 # ir_module_module -> skip init; exists but empty -> init allowed; missing
 # -> create + init. An already-initialized db is NEVER re-init'd.
-- name: "[{{ tenant_name }}] Determine whether the one-shot init Job must run"
+- name: "Determine whether the one-shot init Job must run [{{ tenant_name }}]"
   ansible.builtin.set_fact:
     _deploy_needs_init: >-
       {{ (instance_slug not in (_deploy_pg_info.databases | default({})))
          or ((_deploy_init_check.rowcount | default(0) | int) == 0) }}
 
-- name: "[{{ tenant_name }}] Apply the tenant's ADMIN_PASSWD Secret"
+- name: "Apply the tenant's ADMIN_PASSWD Secret [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -72,7 +75,7 @@
     template: tenant-secret.yaml.j2
   no_log: true
 
-- name: "[{{ tenant_name }}] Create the tenant database (if missing)"
+- name: "Create the tenant database (if missing) [{{ tenant_name }}]"
   community.postgresql.postgresql_db:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -83,7 +86,7 @@
 
 # Admin/backup grants are issued here too so they exist from birth, not
 # only from the first suspend/resume cycle.
-- name: "[{{ tenant_name }}] REVOKE CONNECT from PUBLIC on the tenant database"
+- name: "REVOKE CONNECT from PUBLIC on the tenant database [{{ tenant_name }}]"
   community.postgresql.postgresql_privs:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -95,7 +98,7 @@
     roles: PUBLIC
     state: absent
 
-- name: "[{{ tenant_name }}] GRANT CONNECT to the pool role + admin/backup roles"
+- name: "GRANT CONNECT to the pool role + admin/backup roles [{{ tenant_name }}]"
   community.postgresql.postgresql_privs:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -117,26 +120,27 @@
 # same sequencing as README "Tenant lifecycle" (the init Job itself still
 # talks to PG directly, never through PgBouncer - this ordering is about
 # establishing desired state deterministically, not a runtime dependency).
-- name: "[{{ tenant_name }}] Write this tenant's PgBouncer per-db entry"
+- name: "Write this tenant's PgBouncer per-db entry [{{ tenant_name }}]"
   ansible.builtin.include_tasks: _sync-pgbouncer-tenants.yml
   vars:
     _pgb_override_slug: "{{ instance_slug }}"
     _pgb_override_cap: "{{ tenant_spec.tenant_db_max_connections }}"
 
-- import_tasks: _assert-init-modules.yml
+- name: Assert the tenant's init_modules exist on the addons PVC
+  ansible.builtin.import_tasks: _assert-init-modules.yml
   when: _deploy_needs_init | bool
 
-- name: "[{{ tenant_name }}] Run the one-shot init Job"
+- name: "Run the one-shot init Job [{{ tenant_name }}]"
   when: _deploy_needs_init | bool
   block:
-    - name: "[{{ tenant_name }}] Apply the init Job"
+    - name: "Apply the init Job [{{ tenant_name }}]"
       kubernetes.core.k8s:
         kubeconfig: "{{ kubeconfig_path }}"
         state: present
         namespace: "{{ xayma_namespace }}"
         template: job-init.yaml.j2
 
-    - name: "[{{ tenant_name }}] Wait for the init Job to complete"
+    - name: "Wait for the init Job to complete [{{ tenant_name }}]"
       kubernetes.core.k8s_info:
         kubeconfig: "{{ kubeconfig_path }}"
         kind: Job
@@ -150,7 +154,7 @@
       retries: 90
       delay: 10
 
-    - name: "[{{ tenant_name }}] Surface the init Job's pod logs on failure"
+    - name: "Surface the init Job's pod logs on failure [{{ tenant_name }}]"
       kubernetes.core.k8s_log:
         kubeconfig: "{{ kubeconfig_path }}"
         namespace: "{{ xayma_namespace }}"
@@ -159,7 +163,7 @@
       register: _deploy_init_logs
       when: _deploy_init_status.resources[0].status.failed | default(0) | int > 0
 
-    - name: "[{{ tenant_name }}] Assert the init Job succeeded"
+    - name: "Assert the init Job succeeded [{{ tenant_name }}]"
       ansible.builtin.assert:
         that: _deploy_init_status.resources[0].status.succeeded | default(0) | int > 0
         fail_msg: >-
@@ -169,14 +173,14 @@
 # Runs on EVERY deploy (not just first init) - idempotently resets the
 # derived admin password and refreshes company/config defaults, which also
 # doubles as a documented way to recover a forgotten admin password.
-- name: "[{{ tenant_name }}] Apply the fixup Job"
+- name: "Apply the fixup Job [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
     namespace: "{{ xayma_namespace }}"
     template: job-fixup.yaml.j2
 
-- name: "[{{ tenant_name }}] Wait for the fixup Job to complete"
+- name: "Wait for the fixup Job to complete [{{ tenant_name }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Job
@@ -190,7 +194,7 @@
   retries: 30
   delay: 5
 
-- name: "[{{ tenant_name }}] Surface the fixup Job's pod logs on failure"
+- name: "Surface the fixup Job's pod logs on failure [{{ tenant_name }}]"
   kubernetes.core.k8s_log:
     kubeconfig: "{{ kubeconfig_path }}"
     namespace: "{{ xayma_namespace }}"
@@ -199,14 +203,14 @@
   register: _deploy_fixup_logs
   when: _deploy_fixup_status.resources[0].status.failed | default(0) | int > 0
 
-- name: "[{{ tenant_name }}] Assert the fixup Job succeeded"
+- name: "Assert the fixup Job succeeded [{{ tenant_name }}]"
   ansible.builtin.assert:
     that: _deploy_fixup_status.resources[0].status.succeeded | default(0) | int > 0
     fail_msg: >-
       fixup-{{ instance_slug }} failed - pod logs:
       {{ _deploy_fixup_logs.log | default('(no logs captured)') }}
 
-- name: "[{{ tenant_name }}] Apply the tenant's custom-domain Certificate"
+- name: "Apply the tenant's custom-domain Certificate [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -214,7 +218,7 @@
     template: tenant-certificate.yaml.j2
   when: custom_domain | default('') | length > 0
 
-- name: "[{{ tenant_name }}] Remove any stale custom-domain Certificate + IngressRoute + hostrewrite Middleware"
+- name: "Remove any stale custom-domain Certificate + IngressRoute + hostrewrite Middleware [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: absent
@@ -230,7 +234,7 @@
     label: "{{ item.kind }}"
   when: custom_domain | default('') | length == 0
 
-- name: "[{{ tenant_name }}] Apply the tenant's ratelimit Middleware + IngressRoute (running)"
+- name: "Apply the tenant's ratelimit Middleware + IngressRoute (running) [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -239,7 +243,7 @@
   vars:
     instance_state: running
 
-- name: "[{{ tenant_name }}] Smoke test the tenant's default host"
+- name: "Smoke test the tenant's default host [{{ tenant_name }}]"
   ansible.builtin.uri:
     url: "https://{{ default_domain }}/web/login"
     status_code: 200

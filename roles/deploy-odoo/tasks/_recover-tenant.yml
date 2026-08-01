@@ -12,7 +12,7 @@
 #       tenant_spec (partial - only the two keys any IngressRoute re-render
 #       needs: tenant_db_max_connections, ratelimit.{avg,burst} - init_modules
 #       is NOT recovered here since no recovered action ever re-runs init)
-- name: "[{{ tenant_name }}] Fetch the current IngressRoute"
+- name: "Fetch the current IngressRoute [{{ tenant_name }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: IngressRoute
@@ -21,12 +21,12 @@
     name: "{{ tenant_name }}"
   register: _recover_ingressroute
 
-- name: "[{{ tenant_name }}] Assert the tenant has been deployed"
+- name: "Assert the tenant has been deployed [{{ tenant_name }}]"
   ansible.builtin.assert:
     that: _recover_ingressroute.resources | length > 0
     fail_msg: "No IngressRoute {{ tenant_name }} in {{ xayma_namespace }} - has this tenant been deployed?"
 
-- name: "[{{ tenant_name }}] Fetch the tenant's custom-domain Certificate, if any"
+- name: "Fetch the tenant's custom-domain Certificate, if any [{{ tenant_name }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Certificate
@@ -35,7 +35,7 @@
     name: "{{ tenant_name }}-tls"
   register: _recover_cert
 
-- name: "[{{ tenant_name }}] Fetch the tenant's ratelimit Middleware"
+- name: "Fetch the tenant's ratelimit Middleware [{{ tenant_name }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Middleware
@@ -44,7 +44,7 @@
     name: "{{ tenant_name }}-ratelimit"
   register: _recover_ratelimit_mw
 
-- name: "[{{ tenant_name }}] Recover pool assignment/state/domain from live labels"
+- name: "Recover pool assignment/state/domain from live labels [{{ tenant_name }}]"
   ansible.builtin.set_fact:
     tenant_pool_id: "{{ _recover_ingressroute.resources[0].metadata.labels['xayma.sh/pool-id'] }}"
     tenant_version: "{{ _recover_ingressroute.resources[0].metadata.labels['xayma.sh/odoo-version'] }}"
@@ -53,7 +53,7 @@
     tenant_custom_domain: >-
       {{ _recover_cert.resources[0].spec.dnsNames[0] if (_recover_cert.resources | length > 0) else '' }}
 
-- name: "[{{ tenant_name }}] Compute the tenant's current PG role name"
+- name: "Compute the tenant's current PG role name [{{ tenant_name }}]"
   ansible.builtin.set_fact:
     tenant_pg_role: "pool_{{ tenant_version }}_{{ tenant_plan }}"
 
@@ -61,7 +61,7 @@
 # tenant's IngressRoute/ratelimit Middleware WITHOUT going through a fresh
 # _resolve-plan-spec.yml (start/stop/suspend/edit-domain never touch
 # sizing, so they must preserve whatever's already live, not recompute it).
-- name: "[{{ tenant_name }}] Recover the tenant's PgBouncer cap + ratelimit spec"
+- name: "Recover the tenant's PgBouncer cap + ratelimit spec [{{ tenant_name }}]"
   ansible.builtin.set_fact:
     tenant_spec:
       tenant_db_max_connections: >-

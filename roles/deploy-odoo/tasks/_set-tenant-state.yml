@@ -11,10 +11,12 @@
 # Deployments/replicas - pools are shared, so a single tenant's state never
 # scales anything (that only happens tenant-count-reaches-zero in
 # delete-tenant.yml).
-- import_tasks: _recover-tenant.yml
-- import_tasks: _pg-connection.yml
+- name: Recover this tenant's current pool/state from live cluster facts
+  ansible.builtin.import_tasks: _recover-tenant.yml
+- name: Resolve the shared Postgres connection facts
+  ansible.builtin.import_tasks: _pg-connection.yml
 
-- name: "[{{ tenant_name }}] REVOKE the pool role's CONNECT on this tenant's database"
+- name: "REVOKE the pool role's CONNECT on this tenant's database [{{ tenant_name }}]"
   community.postgresql.postgresql_privs:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -27,7 +29,7 @@
     state: absent
   when: _state_target != 'running'
 
-- name: "[{{ tenant_name }}] Terminate any live backends on this tenant's database"
+- name: "Terminate any live backends on this tenant's database [{{ tenant_name }}]"
   community.postgresql.postgresql_query:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -38,10 +40,11 @@
       dbname: "{{ instance_slug }}"
   when: _state_target != 'running'
 
-- import_tasks: _purge-tenant-redis-sessions.yml
+- name: Purge this tenant's Redis sessions
+  ansible.builtin.import_tasks: _purge-tenant-redis-sessions.yml
   when: _state_target != 'running'
 
-- name: "[{{ tenant_name }}] GRANT the pool role's CONNECT back on this tenant's database"
+- name: "GRANT the pool role's CONNECT back on this tenant's database [{{ tenant_name }}]"
   community.postgresql.postgresql_privs:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -54,7 +57,7 @@
     state: present
   when: _state_target == 'running'
 
-- name: "[{{ tenant_name }}] Repoint the IngressRoute ({{ _state_target }})"
+- name: "Repoint the IngressRoute [{{ tenant_name ~ ' (' ~ _state_target ~ ')' }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present

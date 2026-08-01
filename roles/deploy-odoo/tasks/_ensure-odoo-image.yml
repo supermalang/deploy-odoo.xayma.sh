@@ -23,7 +23,7 @@
 # repos; supplies a JWT (via the same Hub API login endpoint) when
 # vault_odoo_dockerhub_username is set, for private repos.
 
-- name: "[{{ odoo_image_repo }}:{{ version }}.0] Authenticate to the Docker Hub API (private-repo tag check)"
+- name: "Authenticate to the Docker Hub API (private-repo tag check) [{{ odoo_image_repo ~ ':' ~ version ~ '.0' }}]"
   ansible.builtin.uri:
     url: "https://hub.docker.com/v2/users/login/"
     method: POST
@@ -36,13 +36,13 @@
   no_log: true
   when: vault_odoo_dockerhub_username | default('') | length > 0
 
-- name: "[{{ odoo_image_repo }}:{{ version }}.0] Set the Docker Hub JWT fact"
+- name: "Set the Docker Hub JWT fact [{{ odoo_image_repo ~ ':' ~ version ~ '.0' }}]"
   ansible.builtin.set_fact:
     _dockerhub_jwt: "{{ _dockerhub_login.json.token | default('') }}"
   no_log: true
   when: vault_odoo_dockerhub_username | default('') | length > 0
 
-- name: "[{{ odoo_image_repo }}:{{ version }}.0] Check whether the tag already exists in the registry"
+- name: "Check whether the tag already exists in the registry [{{ odoo_image_repo ~ ':' ~ version ~ '.0' }}]"
   ansible.builtin.uri:
     url: "https://hub.docker.com/v2/repositories/{{ odoo_image_repo }}/tags/{{ version }}.0/"
     status_code: [200, 401, 404]
@@ -51,7 +51,7 @@
   register: _odoo_image_check
   failed_when: false
 
-- name: "[{{ odoo_image_repo }}:{{ version }}.0] Assert automatic build is enabled, or the tag already exists"
+- name: "Assert automatic build is enabled, or the tag already exists [{{ odoo_image_repo ~ ':' ~ version ~ '.0' }}]"
   ansible.builtin.assert:
     that: (_odoo_image_check.status | default(0)) == 200 or (odoo_image_build.enabled | bool)
     fail_msg: >-
@@ -62,7 +62,7 @@
       (and vault_odoo_dockerhub_username/vault_odoo_dockerhub_token) once
       nerdctl-full is installed on this host.
 
-- name: "[{{ odoo_image_repo }}:{{ version }}.0] Build + push the missing tag via nerdctl"
+- name: "Build + push the missing tag via nerdctl [{{ odoo_image_repo ~ ':' ~ version ~ '.0' }}]"
   when: (_odoo_image_check.status | default(0)) != 200
   block:
     - name: "Assert Docker Hub credentials are set before attempting a build"
@@ -108,7 +108,7 @@
       no_log: true
       changed_when: false
 
-    - name: "Build {{ odoo_image_repo }}:{{ version }}.0 via nerdctl (k3s's embedded containerd)"
+    - name: "Build via nerdctl (k3s's embedded containerd): {{ odoo_image_repo ~ ':' ~ version ~ '.0' }}"
       ansible.builtin.command:
         argv:
           - nerdctl
@@ -125,7 +125,7 @@
           - "{{ role_path }}/files/odoo-image"
       changed_when: true
 
-    - name: "Push {{ odoo_image_repo }}:{{ version }}.0"
+    - name: "Push the image tag: {{ odoo_image_repo ~ ':' ~ version ~ '.0' }}"
       ansible.builtin.command:
         argv:
           - nerdctl

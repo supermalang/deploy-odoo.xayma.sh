@@ -5,19 +5,20 @@
 # _recover-tenant.yml uses everywhere else. Adapted to the wildcard-cert
 # reality: only a CHANGE to custom_domain touches a Certificate at all (the
 # default host is always covered by the platform wildcard).
-- import_tasks: _recover-tenant.yml
+- name: Recover this tenant's current pool/state from live cluster facts
+  ansible.builtin.import_tasks: _recover-tenant.yml
 
-- name: "[{{ tenant_name }}] Resolve the platform's edge IP (via the default host)"
+- name: "Resolve the platform's edge IP (via the default host) [{{ tenant_name }}]"
   ansible.builtin.set_fact:
     _edit_platform_ip: "{{ lookup('community.general.dig', default_domain) }}"
   when: custom_domain | default('') | length > 0
 
-- name: "[{{ tenant_name }}] Resolve the requested custom domain"
+- name: "Resolve the requested custom domain [{{ tenant_name }}]"
   ansible.builtin.set_fact:
     _edit_custom_domain_ip: "{{ lookup('community.general.dig', custom_domain) }}"
   when: custom_domain | default('') | length > 0
 
-- name: "[{{ tenant_name }}] Assert the custom domain points at this platform"
+- name: "Assert the custom domain points at this platform [{{ tenant_name }}]"
   ansible.builtin.assert:
     that: _edit_custom_domain_ip == _edit_platform_ip
     fail_msg: >-
@@ -27,7 +28,7 @@
       its DNS record at the platform before retrying.
   when: custom_domain | default('') | length > 0
 
-- name: "[{{ tenant_name }}] Apply the tenant's custom-domain Certificate"
+- name: "Apply the tenant's custom-domain Certificate [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -35,7 +36,7 @@
     template: tenant-certificate.yaml.j2
   when: custom_domain | default('') | length > 0
 
-- name: "[{{ tenant_name }}] Remove the custom-domain Certificate + IngressRoute + hostrewrite Middleware (custom_domain cleared)"
+- name: "Remove the custom-domain Certificate + IngressRoute + hostrewrite Middleware (custom_domain cleared) [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: absent
@@ -51,7 +52,7 @@
     label: "{{ item.kind }}"
   when: custom_domain | default('') | length == 0
 
-- name: "[{{ tenant_name }}] Reapply the IngressRoute for the new domain set ({{ tenant_state }})"
+- name: "Reapply the IngressRoute for the new domain set [{{ tenant_name ~ ' (' ~ tenant_state ~ ')' }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present

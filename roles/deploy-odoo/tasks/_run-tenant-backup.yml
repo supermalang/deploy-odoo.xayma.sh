@@ -3,7 +3,7 @@
 # final safety backup. Required param: `_backup_kind` (daily|adhoc). Lands
 # in MinIO at snapshots/{customer}/{instance}/{_backup_kind}/{timestamp}/ -
 # the same layout tasks/restore-tenant.yml expects.
-- name: "[{{ tenant_name }}] Apply the backup Job"
+- name: "Apply the backup Job [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -11,7 +11,7 @@
     template: job-backup.yaml.j2
   register: _backup_job
 
-- name: "[{{ tenant_name }}] Wait for the backup Job to complete"
+- name: "Wait for the backup Job to complete [{{ tenant_name }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Job
@@ -25,7 +25,7 @@
   retries: 90
   delay: 10
 
-- name: "[{{ tenant_name }}] Surface the backup Job's pod logs on failure"
+- name: "Surface the backup Job's pod logs on failure [{{ tenant_name }}]"
   kubernetes.core.k8s_log:
     kubeconfig: "{{ kubeconfig_path }}"
     namespace: "{{ xayma_namespace }}"
@@ -34,7 +34,7 @@
   register: _backup_job_logs
   when: _backup_job_status.resources[0].status.failed | default(0) | int > 0
 
-- name: "[{{ tenant_name }}] Assert the backup Job succeeded"
+- name: "Assert the backup Job succeeded [{{ tenant_name }}]"
   ansible.builtin.assert:
     that: _backup_job_status.resources[0].status.succeeded | default(0) | int > 0
     fail_msg: >-

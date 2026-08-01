@@ -10,7 +10,8 @@
 #   export CONTROLLER_HOST=https://awx.internal
 #   export CONTROLLER_OAUTH_TOKEN=...
 #   ansible-playbook awx-setup.yml
-- hosts: localhost
+- name: Reconcile the AWX router pattern (WFJT + internal Job Templates)
+  hosts: localhost
   connection: local
   gather_facts: false
   roles:

@@ -33,8 +33,10 @@
 # a YAML folded (`>-`) shell command block.
 - name: "Build the space-separated customer/instance pair list for the Job's shell loop"
   ansible.builtin.set_fact:
-    _freshness_tenant_pairs: >-
-      {% for r in _freshness_ingressroutes.resources %}{{ r.metadata.labels['xayma.sh/customer'] }}/{{ r.metadata.labels['xayma.sh/instance'] }}{{ ' ' if not loop.last else '' }}{% endfor %}
+    _freshness_tenant_pairs: |-
+      {%- for r in _freshness_ingressroutes.resources -%}
+      {{ r.metadata.labels['xayma.sh/customer'] }}/{{ r.metadata.labels['xayma.sh/instance'] }}{{ ' ' if not loop.last else '' }}
+      {%- endfor -%}
     _freshness_tenant_count: "{{ _freshness_ingressroutes.resources | length }}"
 
 # An empty for-loop above renders to an empty STRING, but Ansible's
@@ -82,5 +84,6 @@
     that: _freshness_job_status.resources[0].status.succeeded | default(0) | int > 0
     fail_msg: >-
       {{ _freshness_job.result.metadata.name }} found one or more tenants
-      without a snapshot newer than {{ snapshot_freshness.max_age_hours }}h -
-      pod logs: {{ _freshness_job_logs.log | default('(no logs captured)') }}
+      without a snapshot newer than {{ snapshot_freshness.max_age_hours }}h,
+      or with a recent snapshot too small to be real - pod logs:
+      {{ _freshness_job_logs.log | default('(no logs captured)') }}

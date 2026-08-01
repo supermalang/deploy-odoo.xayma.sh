@@ -10,7 +10,7 @@
 # and filter on that field instead, done server-side via a Lua script
 # (SCAN+GET+cjson.decode+DEL) rather than round-tripping every key through
 # the exec session.
-- name: "[{{ tenant_name }}] Purge this tenant's Redis sessions"
+- name: "Purge this tenant's Redis sessions [{{ tenant_name }}]"
   kubernetes.core.k8s_exec:
     kubeconfig: "{{ kubeconfig_path }}"
     namespace: "{{ xayma_namespace }}"

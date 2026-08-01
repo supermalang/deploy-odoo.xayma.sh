@@ -15,7 +15,8 @@
 # roles/configure-awx/README section in the main README's "AWX" - the
 # awx.awx modules below pick these up from the environment automatically,
 # no explicit connection params needed here).
-- hosts: localhost
+- name: Route odoo_action to the internal Job Template that owns it
+  hosts: localhost
   connection: local
   gather_facts: false
   vars:
@@ -38,7 +39,7 @@
     # survey exposes (see roles/configure-awx). `default(omit)` is
     # Ansible's standard idiom for "only include this dict key if the var
     # was actually set" - undefined ones simply vanish from extra_vars.
-    - name: "Launch {{ _target_job_template }} with this call's extra_vars"
+    - name: "Launch, with this call's extra_vars: {{ _target_job_template }}"
       awx.awx.job_launch:
         job_template: "{{ _target_job_template }}"
         extra_vars:

@@ -467,13 +467,15 @@ fixed-platform-role credential this role creates once for the whole tier:
 the Postgres superuser, `pgadmin_ro`/`backup_ro`, PgBouncer's `auth_query`
 role, `pg_exporter`, and Redis's `requirepass` — each
 `hash('sha256', seed ~ '|' ~ role_name)`), plus
-`vault_odoo_snapshot_access_key`/`vault_odoo_snapshot_secret_key` — the
-platform MinIO's **scoped** `xayma.snapshots` user (Get/Put/Delete objects +
-list the `snapshots` bucket only, no admin API, no access to `uploads`/
-`backups`) for `backup`/`restore`/`check-snapshot-freshness`, **not** the
-platform root user (`xayma.admin`). The secret value lives in
+`vault_odoo_snapshot_secret_key` — the platform MinIO's **scoped**
+`xayma.snapshots` user's secret (Get/Put/Delete objects + list the
+`snapshots` bucket only, no admin API, no access to `uploads`/`backups`)
+for `backup`/`restore`/`check-snapshot-freshness`, **not** the platform
+root user (`xayma.admin`). The secret value lives in
 `install-platform.xayma.sh`'s vault today (`vault_minio_snapshots_password`)
-and must be copied here manually — see "Manual steps". See
+and must be copied here manually — see "Manual steps". The access key
+itself (`xayma.snapshots`) is a fixed identity, not a secret, so it is a
+plain default (`odoo.snapshot_access_key`) rather than vaulted. See
 `defaults/main/02-credentials.yml.example` to (re)create it.
 
 Known caveats
@@ -690,9 +692,10 @@ snapshot layout is unchanged) rather than expecting any in-place upgrade.
 
 - [x] **Vault**: `vault_odoo_platform_password` — done (added to the
       encrypted `defaults/main/02-credentials.yml`).
-- [ ] **Vault**: `vault_odoo_snapshot_access_key`/`vault_odoo_snapshot_secret_key`
+- [ ] **Vault**: `vault_odoo_snapshot_secret_key`
       — copy the real value from `install-platform.xayma.sh`'s vault
-      (`vault_minio_snapshots_password`; access key is `xayma.snapshots`)
+      (`vault_minio_snapshots_password`; access key is the plain default
+      `xayma.snapshots`, not vaulted)
       into this repo's vault: `ansible-vault edit
       roles/deploy-odoo/defaults/main/02-credentials.yml
       --vault-password-file vault_password`. Confirm out of band that the

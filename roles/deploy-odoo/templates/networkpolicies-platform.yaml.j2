@@ -124,6 +124,29 @@ spec:
       ports:
         - port: 6379
 ---
+# observability -> postgres-exporter (container port 9187). Without this,
+# default-deny-ingress blocks the scrape despite the Service's
+# prometheus.io/scrape annotation - see templates/postgres-exporter.yaml.j2.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-observability-to-postgres-exporter
+  namespace: {{ xayma_namespace }}
+  labels: {{ platform_base_labels | to_json }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-exporter
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              xayma.sh/network-zone: observability
+      ports:
+        - port: 9187
+---
 # Edge -> suspend-backend. This is edge->suspend-backend (not
 # pools->suspend-backend) DELIBERATELY - Traefik's `errors` middleware
 # calls out to the configured error service FROM THE EDGE itself when a

@@ -1,5 +1,6 @@
 ---
-- hosts: all
+- name: Deploy the shared multi-tenant Odoo pool tier
+  hosts: all
   become: true
   gather_facts: true
   roles:

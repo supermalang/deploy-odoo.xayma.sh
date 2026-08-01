@@ -3,7 +3,7 @@
 # migration needs Odoo's own upgrade tooling against a copied database, not
 # an in-place pool reassignment. Fails fast with a clear message rather
 # than silently doing nothing or (worse) something destructive.
-- name: change-version is not implemented
+- name: Change-version is not implemented
   ansible.builtin.fail:
     msg: >-
       odoo_action=change-version (major-version migration) is out of scope

@@ -4,10 +4,12 @@
 # - AWX Schedules bind to one Job Template with fixed extra_vars, so
 # multi-tenant iteration is app-driven, not something this role or
 # configure-awx codifies per tenant).
-- import_tasks: _recover-tenant.yml
+- name: Recover this tenant's current pool/state from live cluster facts
+  ansible.builtin.import_tasks: _recover-tenant.yml
 
-- name: "[{{ tenant_name }}] Determine the snapshot kind"
+- name: "Determine the snapshot kind [{{ tenant_name }}]"
   ansible.builtin.set_fact:
     _backup_kind: "{{ snapshot_kind | default('daily') }}"
 
-- import_tasks: _run-tenant-backup.yml
+- name: Run the tenant backup Job
+  ansible.builtin.import_tasks: _run-tenant-backup.yml

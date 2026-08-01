@@ -9,7 +9,6 @@
       - vault_odoo_db_password | default('') | length > 0
       - vault_odoo_admin_password | default('') | length > 0
       - vault_odoo_platform_password | default('') | length > 0
-      - vault_odoo_snapshot_access_key | default('') | length > 0
       - vault_odoo_snapshot_secret_key | default('') | length > 0
     fail_msg: >-
       One or more vault_odoo_* secrets are unset. Copy

@@ -9,10 +9,12 @@
 # Redis sessions, forcing its next request to open a fresh backend
 # connection and log in again - the closest equivalent to "restart" that is
 # safe in a shared-pool architecture.
-- import_tasks: _recover-tenant.yml
-- import_tasks: _pg-connection.yml
+- name: Recover this tenant's current pool/state from live cluster facts
+  ansible.builtin.import_tasks: _recover-tenant.yml
+- name: Resolve the shared Postgres connection facts
+  ansible.builtin.import_tasks: _pg-connection.yml
 
-- name: "[{{ tenant_name }}] Terminate any live backends on this tenant's database"
+- name: "Terminate any live backends on this tenant's database [{{ tenant_name }}]"
   community.postgresql.postgresql_query:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -22,4 +24,5 @@
     named_args:
       dbname: "{{ instance_slug }}"
 
-- import_tasks: _purge-tenant-redis-sessions.yml
+- name: Purge this tenant's Redis sessions
+  ansible.builtin.import_tasks: _purge-tenant-redis-sessions.yml

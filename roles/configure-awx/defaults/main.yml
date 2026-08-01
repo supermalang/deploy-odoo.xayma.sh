@@ -50,8 +50,11 @@ awx_snapshot_freshness_rrule: "DTSTART:20260101T033000Z RRULE:FREQ=DAILY;INTERVA
 awx_survey_spec:
   description: "deploy-odoo tenant/pool lifecycle contract"
   spec:
-    - {question_name: "Action", variable: odoo_action, type: multiplechoice, required: true,
-       choices: "deploy\nstart\nstop\nsuspend\nrestart\nedit-domain\nchange-plan\napply-plan\nchange-version\ndelete\nrestore\nbackup\nsync-addons\ncheck-snapshot-freshness"}
+    - question_name: "Action"
+      variable: odoo_action
+      type: multiplechoice
+      required: true
+      choices: "deploy\nstart\nstop\nsuspend\nrestart\nedit-domain\nchange-plan\napply-plan\nchange-version\ndelete\nrestore\nbackup\nsync-addons\ncheck-snapshot-freshness"
     - {question_name: "Customer", variable: customer, type: text, required: false}
     - {question_name: "Instance name", variable: instancename, type: text, required: false}
     - {question_name: "Odoo version", variable: version, type: text, required: false, default: "19"}

@@ -6,9 +6,10 @@
 # spec, resolved with the same precedence as deploy (see README "Plan
 # resolution"). No data movement: the tenant's database/filestore directory
 # are untouched, only which pool serves them (and its cap/ratelimit) changes.
-- import_tasks: _recover-tenant.yml
+- name: Recover this tenant's current pool/state from live cluster facts
+  ansible.builtin.import_tasks: _recover-tenant.yml
 
-- name: "[{{ tenant_name }}] Log the pool move"
+- name: "Log the pool move [{{ tenant_name }}]"
   ansible.builtin.debug:
     msg: >-
       Moving {{ tenant_name }} from plan={{ tenant_plan }} to plan={{ plan }}
@@ -20,14 +21,16 @@
 # Resolve the TARGET plan_spec + ensure the TARGET pool exists (create-only
 # semantics apply - see _resolve-pool.yml). `version` is forced to the
 # tenant's CURRENT (unchanged) version for both imports below.
-- import_tasks: _resolve-plan-spec.yml
+- name: Resolve the effective plan_spec
+  ansible.builtin.import_tasks: _resolve-plan-spec.yml
   vars:
     version: "{{ tenant_version }}"
-- import_tasks: _resolve-pool.yml
+- name: Resolve (or create) this tenant's pool
+  ansible.builtin.import_tasks: _resolve-pool.yml
   vars:
     version: "{{ tenant_version }}"
 
-- name: "[{{ tenant_name }}] REVOKE the old pool role's CONNECT on this tenant's database"
+- name: "REVOKE the old pool role's CONNECT on this tenant's database [{{ tenant_name }}]"
   community.postgresql.postgresql_privs:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -39,7 +42,7 @@
     roles: "{{ tenant_pg_role }}"
     state: absent
 
-- name: "[{{ tenant_name }}] GRANT the new pool role's CONNECT on this tenant's database"
+- name: "GRANT the new pool role's CONNECT on this tenant's database [{{ tenant_name }}]"
   community.postgresql.postgresql_privs:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
@@ -51,13 +54,13 @@
     roles: "pool_{{ tenant_version }}_{{ plan }}"
     state: present
 
-- name: "[{{ tenant_name }}] Update this tenant's PgBouncer per-db entry to the new plan's cap"
+- name: "Update this tenant's PgBouncer per-db entry to the new plan's cap [{{ tenant_name }}]"
   ansible.builtin.include_tasks: _sync-pgbouncer-tenants.yml
   vars:
     _pgb_override_slug: "{{ instance_slug }}"
     _pgb_override_cap: "{{ tenant_spec.tenant_db_max_connections }}"
 
-- name: "[{{ tenant_name }}] Patch the ratelimit Middleware + IngressRoute to the new pool/spec"
+- name: "Patch the ratelimit Middleware + IngressRoute to the new pool/spec [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -71,7 +74,7 @@
 
 # If the OLD pool just lost its last tenant, scale it to 0 (never delete its
 # objects) - same rule delete-tenant.yml applies.
-- name: "[{{ tenant_name }}] Count remaining tenants on the old pool ({{ tenant_pool_id }})"
+- name: "Count remaining tenants on the old pool [{{ tenant_name ~ ' on ' ~ tenant_pool_id }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: IngressRoute
@@ -81,7 +84,7 @@
       - "xayma.sh/pool-id={{ tenant_pool_id }}"
   register: _changeplan_old_pool_tenants
 
-- name: "[{{ tenant_name }}] Scale the old pool ({{ tenant_pool_id }}) to 0 (no tenants remain)"
+- name: "Scale the old pool to 0 (no tenants remain) [{{ tenant_name ~ ' on ' ~ tenant_pool_id }}]"
   kubernetes.core.k8s_scale:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Deployment

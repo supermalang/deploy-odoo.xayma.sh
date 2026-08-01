@@ -28,7 +28,8 @@
          | combine(plans[plan] | default({}), recursive=True)
          | combine(plan_spec | default({}), recursive=True) }}
 
-- import_tasks: _assert-plan-spec.yml
+- name: Assert the resolved plan_spec is well-formed
+  ansible.builtin.import_tasks: _assert-plan-spec.yml
 
 - name: Split the resolved spec into pool-scoped and tenant-scoped facts
   ansible.builtin.set_fact:

@@ -37,56 +37,73 @@
       edit-domain|change-plan|apply-plan|change-version|delete|restore|
       backup|sync-addons|check-snapshot-freshness>
 
-- import_tasks: sync-addons.yml
+- name: Run odoo_action=sync-addons
+  ansible.builtin.import_tasks: sync-addons.yml
   when: odoo_action == 'sync-addons'
 
-- import_tasks: check-snapshot-freshness.yml
+- name: Run odoo_action=check-snapshot-freshness
+  ansible.builtin.import_tasks: check-snapshot-freshness.yml
   when: odoo_action == 'check-snapshot-freshness'
 
-- import_tasks: _assert-identity.yml
+- name: Assert tenant identity vars are set
+  ansible.builtin.import_tasks: _assert-identity.yml
   when: odoo_action not in ['sync-addons', 'apply-plan', 'check-snapshot-freshness']
 
-- import_tasks: _assert-vault.yml
+- name: Assert this role's own vault secrets are set
+  ansible.builtin.import_tasks: _assert-vault.yml
   when: odoo_action != 'sync-addons'
 
 # Required for odoo_action=deploy/change-plan/apply-plan only - every other
 # tenant-scoped action recovers its pool assignment from live state instead
 # (see tasks/_recover-tenant.yml) rather than taking `plan` as input again.
-- import_tasks: _assert-plan.yml
+- name: Assert the plan/pool topology is supported
+  ansible.builtin.import_tasks: _assert-plan.yml
   when: odoo_action in ['deploy', 'change-plan', 'apply-plan']
 
-- import_tasks: apply-plan.yml
+- name: Run odoo_action=apply-plan
+  ansible.builtin.import_tasks: apply-plan.yml
   when: odoo_action == 'apply-plan'
 
-- import_tasks: deploy-tenant.yml
+- name: Run odoo_action=deploy
+  ansible.builtin.import_tasks: deploy-tenant.yml
   when: odoo_action == 'deploy'
 
-- import_tasks: start-tenant.yml
+- name: Run odoo_action=start
+  ansible.builtin.import_tasks: start-tenant.yml
   when: odoo_action == 'start'
 
-- import_tasks: stop-tenant.yml
+- name: Run odoo_action=stop
+  ansible.builtin.import_tasks: stop-tenant.yml
   when: odoo_action == 'stop'
 
-- import_tasks: suspend-tenant.yml
+- name: Run odoo_action=suspend
+  ansible.builtin.import_tasks: suspend-tenant.yml
   when: odoo_action == 'suspend'
 
-- import_tasks: restart-tenant.yml
+- name: Run odoo_action=restart
+  ansible.builtin.import_tasks: restart-tenant.yml
   when: odoo_action == 'restart'
 
-- import_tasks: edit-tenant-domain.yml
+- name: Run odoo_action=edit-domain
+  ansible.builtin.import_tasks: edit-tenant-domain.yml
   when: odoo_action == 'edit-domain'
 
-- import_tasks: change-plan.yml
+- name: Run odoo_action=change-plan
+  ansible.builtin.import_tasks: change-plan.yml
   when: odoo_action == 'change-plan'
 
-- import_tasks: change-version.yml
+- name: Run odoo_action=change-version
+  ansible.builtin.import_tasks: change-version.yml
   when: odoo_action == 'change-version'
 
-- import_tasks: delete-tenant.yml
+- name: Run odoo_action=delete
+  ansible.builtin.import_tasks: delete-tenant.yml
   when: odoo_action == 'delete'
 
-- import_tasks: restore-tenant.yml
+- name: Run odoo_action=restore
+  ansible.builtin.import_tasks: restore-tenant.yml
   when: odoo_action == 'restore'
 
-- import_tasks: backup-tenant.yml
+- name: Run odoo_action=backup
+  ansible.builtin.import_tasks: backup-tenant.yml
   when: odoo_action == 'backup'

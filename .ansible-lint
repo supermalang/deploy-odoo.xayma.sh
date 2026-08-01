@@ -1,0 +1,18 @@
+---
+profile: production
+
+skip_list:
+  # Roles use dash-naming (deploy-odoo, configure-awx, ...) - the established
+  # project convention (matches install-platform.xayma.sh), referenced by
+  # site.yml/awx-setup.yml/README.md/CLAUDE.md, so renaming would change
+  # behavior for no benefit.
+  - role-name
+  # A few single-value strings can't be wrapped without changing what they
+  # mean: the AWX survey's `choices` fields are one literal "\n"-joined
+  # string (roles/configure-awx/defaults/main.yml), same class of exception
+  # install-platform.xayma.sh already carries for its own unwrappable
+  # shell-command line.
+  - yaml[line-length]
+
+warn_list:
+  - no-changed-when

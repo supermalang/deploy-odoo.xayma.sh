@@ -5,9 +5,10 @@
 # This affects EVERY tenant currently served by this pool; there is no
 # tenant identity in this action's input at all - just `version`+`plan`
 # (+ optional plan_spec/plan_spec_json, same precedence as deploy/change-plan).
-- import_tasks: _resolve-plan-spec.yml
+- name: Resolve the effective plan_spec
+  ansible.builtin.import_tasks: _resolve-plan-spec.yml
 
-- name: "[{{ pool_id }}] Log the forced pool reconcile"
+- name: "Log the forced pool reconcile [{{ pool_id }}]"
   ansible.builtin.debug:
     msg: >-
       WARNING: odoo_action=apply-plan is reconciling pool {{ pool_id }} to a
@@ -15,6 +16,7 @@
       EVERY tenant currently served by this pool - see README "Plan
       resolution" for the blast radius.
 
-- import_tasks: _resolve-pool.yml
+- name: Resolve (or create) this tenant's pool
+  ansible.builtin.import_tasks: _resolve-pool.yml
   vars:
     _force_pool_apply: true
