@@ -5,6 +5,9 @@
 # existence check. Mounted READ-WRITE (unlike every other consumer, which
 # mounts addons read-only) since some callers need to write. Required vars:
 # `_fileops_name` (Job name), `_fileops_command` (a shell -c string).
+# Optional: `_fileops_image` (default busybox) - _assert-init-modules.yml
+# overrides this to the real odoo image so its check can see Odoo's own
+# bundled addons paths too, not just the PVC this Job otherwise only needs.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -23,7 +26,7 @@ spec:
       priorityClassName: {{ priorityclass.name }}
       containers:
         - name: fileops
-          image: busybox:{{ versions.busybox }}
+          image: "{{ _fileops_image | default('busybox:' ~ versions.busybox) }}"
           command: ["sh", "-c", {{ _fileops_command | to_json }}]
           volumeMounts:
             - {name: filestore, mountPath: /filestore}

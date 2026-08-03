@@ -1,8 +1,15 @@
 ---
 # include_tasks helper (only when the init Job is actually about to run -
 # see deploy-tenant.yml) - fails fast if any of tenant_spec.init_modules
-# isn't present in the shared addons PVC, rather than letting `odoo -i`
-# partially fail deep inside a batch-low Job.
+# isn't present anywhere Odoo would actually look for it, rather than
+# letting `odoo -i` partially fail deep inside a batch-low Job.
+#
+# Runs from the REAL odoo image, not busybox - a bare-modules Job needs
+# visibility into Odoo's own bundled addons paths (base, web, mail, ...),
+# not just the shared PVC. Checking only the PVC used to false-positive on
+# every bundled module ("MISSING: base") since those never live there at
+# all - they ship inside the image itself. Bundled paths are checked
+# FIRST, the shared PVC only as a fallback for what isn't bundled.
 - name: "Run the addons-path module-existence check [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -11,10 +18,17 @@
     template: job-fileops.yaml.j2
   vars:
     _fileops_name: "check-modules-{{ instance_slug }}-{{ ansible_date_time.iso8601_basic_short | lower }}"
+    _fileops_image: "{{ odoo_image_repo }}:{{ version }}.0"
     _fileops_command: >-
       MISSING="";
       for m in {{ tenant_spec.init_modules.split(',') | join(' ') }}; do
-        [ -d "/addons/$m" ] || MISSING="$MISSING $m";
+        if [ -d "/usr/lib/python3/dist-packages/odoo/addons/$m" ] ||
+           [ -d "/usr/lib/python3/dist-packages/addons/$m" ] ||
+           [ -d "/addons/$m" ]; then
+          :;
+        else
+          MISSING="$MISSING $m";
+        fi;
       done;
       if [ -n "$MISSING" ]; then echo "MISSING:$MISSING"; exit 1; fi;
       echo OK
