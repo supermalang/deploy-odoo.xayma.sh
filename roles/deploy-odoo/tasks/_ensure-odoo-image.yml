@@ -117,6 +117,12 @@
           - --namespace
           - "{{ nerdctl_namespace }}"
           - build
+          # Explicit -f: without it, this nerdctl build defaults to looking
+          # for a file literally named "Containerfile" in the context dir
+          # and fails outright (no fallback to "Dockerfile") - the file
+          # here has always been named Dockerfile (files/odoo-image/Dockerfile).
+          - -f
+          - "{{ role_path }}/files/odoo-image/Dockerfile"
           - --build-arg
           - "ODOO_VERSION={{ version }}"
           - --pull
