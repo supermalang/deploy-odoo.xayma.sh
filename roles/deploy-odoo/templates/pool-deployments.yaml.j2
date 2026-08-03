@@ -228,10 +228,13 @@ spec:
         - {name: addons, persistentVolumeClaim: {claimName: odoo-addons}}
 ---
 # {pool}-gevent: 1 replica, db_host=Postgres DIRECT, Service :8072.
-# ODOO_GEVENT_PORT makes Odoo's own bootstrap run ONLY the gevent/
-# long-polling server (monkey-patched, evented) instead of the normal
-# multi-worker bootstrap - the standard technique for splitting long-polling
-# into its own pod without a separate binary/flag.
+# The gevent/LiveChat worker is NOT selectable via any env var or a
+# gevent-only mode - it only exists as a SIDE EFFECT of multi-processing
+# mode (workers >= 1), spawned alongside (not instead of) the normal HTTP
+# workers, listening on --gevent-port. This pod's regular HTTP worker (the
+# one --workers=1 also creates) is simply never sent traffic - Traefik
+# only routes /websocket/* here (see tenant-ingressroute.yaml.j2), matching
+# Odoo's own documented deployment model ("Builtin server"/"LiveChat").
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -288,9 +291,17 @@ spec:
         - name: odoo
           image: "{{ odoo_image_repo }}:{{ version }}.0"
           command: ["odoo"]
-          args: ["-c", "/etc/odoo/odoo.conf", "--workers=0", "--max-cron-threads=0"]
+          # --workers=0 (the odoo.conf default) is single-threaded mode, and
+          # Odoo NEVER spawns a separate gevent/LiveChat worker in that mode
+          # - only multi-processing mode (workers >= 1) does, on
+          # --gevent-port (confirmed against Odoo's own "Builtin server"
+          # docs). This is the one pool role that specifically exists to
+          # host that worker, so it needs its own non-zero workers count -
+          # 1 is enough; the resulting regular HTTP worker this also spawns
+          # is simply never sent any traffic (see tenant-ingressroute.yaml.j2
+          # for the /websocket-only routing to this Service).
+          args: ["-c", "/etc/odoo/odoo.conf", "--workers=1", "--max-cron-threads=0", "--gevent-port=8072"]
           env:
-            - {name: ODOO_GEVENT_PORT, value: "8072"}
             - {name: ODOO_SESSION_REDIS, value: "1"}
             - {name: ODOO_SESSION_REDIS_HOST, value: "{{ redis_name }}"}
             - {name: ODOO_SESSION_REDIS_PORT, value: "6379"}

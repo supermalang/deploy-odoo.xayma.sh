@@ -37,12 +37,19 @@ data:
     db_maxconn = {{ pool_spec.db_maxconn }}
 
     logfile = False
-    log-level = warn
+    log_level = warn
 
-    interface =
-    port = 8069
+    ; http_interface/http_port (NOT bare interface/port - Odoo doesn't
+    ; recognize those key names, confirmed live: "unknown option 'interface'"/
+    ; "unknown option 'port'"). The gevent/LiveChat worker's own port is
+    ; deliberately NOT set here - it only exists in multi-processing mode
+    ; (workers >= 1), which only {pool}-gevent runs with, so it's passed as
+    ; --gevent-port on that one Deployment's CLI args instead (see
+    ; pool-deployments.yaml.j2) rather than unconditionally in the odoo.conf
+    ; every pool role shares.
+    http_interface = 0.0.0.0
+    http_port = 8069
     proxy_mode = True
-    longpolling_port = 8072
 
     addons_path = /opt/extra-addons
     ; session_redis (MANDATORY - no filesystem fallback) is configured

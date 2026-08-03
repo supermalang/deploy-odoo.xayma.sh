@@ -50,9 +50,11 @@ Architecture
     Service — nothing routes traffic here.
   - `{pool}-gevent` — 1 replica, Service on `:8072`, `db_host=`Postgres
     directly (LISTEN/NOTIFY, which the websocket/long-polling worker
-    depends on, is incompatible with PgBouncer's transaction pooling). Runs
-    via `ODOO_GEVENT_PORT=8072`, the standard technique for splitting the
-    long-polling worker into its own pod.
+    depends on, is incompatible with PgBouncer's transaction pooling).
+    `workers=1 --gevent-port=8072` — Odoo only spawns the gevent/LiveChat
+    worker as a side effect of multi-processing mode (`workers >= 1`); this
+    pod's regular HTTP worker (the one `workers=1` also creates) is simply
+    never sent traffic, since Traefik only routes `/websocket/*` here.
 - **ONE shared Postgres** (StatefulSet `postgres:16.6-bookworm`, one PVC,
   superuser Secret from a vault seed) for the entire tier. Every DB
   reference is templated through `pg_target` (`vars/main.yml`), resolved
