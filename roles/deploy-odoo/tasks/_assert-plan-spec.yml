@@ -57,8 +57,15 @@
 - name: Assert limits.mem_soft/mem_hard stay below the pod's own memory limit
   ansible.builtin.assert:
     that:
-      - (_resolved_spec.limits.mem_soft | int) < (_resolved_spec.pod.mem_limit | human_to_bytes)
-      - (_resolved_spec.limits.mem_hard | int) < (_resolved_spec.pod.mem_limit | human_to_bytes)
+      # pod.mem_limit is a Kubernetes resource quantity (e.g. "768Mi") - the
+      # IEC "Mi"/"Gi"/"Ki" suffix Kubernetes uses, NOT a suffix Ansible's
+      # human_to_bytes recognizes (it errors on "768Mi", wanting "768M" or
+      # "768MB" instead). Ansible's bare M/G/K are already binary
+      # (1024-based), numerically identical to Kubernetes' Mi/Gi/Ki - so
+      # stripping the trailing "i" is an exact conversion, not an
+      # approximation.
+      - (_resolved_spec.limits.mem_soft | int) < (_resolved_spec.pod.mem_limit | regex_replace('i$', '') | human_to_bytes)
+      - (_resolved_spec.limits.mem_hard | int) < (_resolved_spec.pod.mem_limit | regex_replace('i$', '') | human_to_bytes)
       - (_resolved_spec.limits.mem_soft | int) <= (_resolved_spec.limits.mem_hard | int)
     fail_msg: >-
       plan_spec for plan={{ plan }}: limits.mem_soft/mem_hard
