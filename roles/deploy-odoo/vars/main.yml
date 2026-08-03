@@ -82,7 +82,7 @@ minio_secret_name: minio-credentials
 pgadmin_ro_role: pgadmin_ro
 backup_ro_role: backup_ro
 pgbouncer_auth_role: pgbouncer_auth
-pg_exporter_role: pg_exporter    # pg_monitor, not pg_read_all_data - a distinct least-privilege scope
+pg_exporter_role: pgexporter    # pg_monitor, not pg_read_all_data - a distinct least-privilege scope. NOT "pg_exporter" - PostgreSQL reserves every role name starting with "pg_" (server-side, non-negotiable) and rejects CREATE ROLE outright.
 
 # --- Domains: default host always attached, optional custom host deduped ---
 # instancename is globally unique, so the default host needs no customer
