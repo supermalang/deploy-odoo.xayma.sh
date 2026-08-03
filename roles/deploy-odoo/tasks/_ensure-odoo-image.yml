@@ -3,7 +3,7 @@
 # deploy/change-plan/apply-plan. Checks whether
 # `{{ odoo_image_repo }}:{{ version }}.0` already exists in the registry;
 # if not AND `odoo_image_build.enabled` is true, builds it from
-# files/odoo-image/Dockerfile (layers the `redis` Python package onto the
+# files/odoo-image/Containerfile (layers the `redis` Python package onto the
 # stock Odoo image - see README "Known caveats") and pushes it. If it's
 # missing and building is disabled, fails fast - better than letting every
 # pod in a brand-new pool crash-loop on a missing/wrong image.
@@ -117,12 +117,15 @@
           - --namespace
           - "{{ nerdctl_namespace }}"
           - build
-          # Explicit -f: without it, this nerdctl build defaults to looking
-          # for a file literally named "Containerfile" in the context dir
-          # and fails outright (no fallback to "Dockerfile") - the file
-          # here has always been named Dockerfile (files/odoo-image/Dockerfile).
+          # This nerdctl build defaults to looking for a file literally
+          # named "Containerfile" in the context dir, and fails outright
+          # with no fallback to "Dockerfile" - passing -f explicitly with
+          # an absolute path did NOT change that behavior (verified: the
+          # build still failed looking for Containerfile, ignoring -f
+          # entirely). Renamed the actual file to match rather than fight
+          # nerdctl's flag handling - see files/odoo-image/Containerfile.
           - -f
-          - "{{ role_path }}/files/odoo-image/Dockerfile"
+          - "{{ role_path }}/files/odoo-image/Containerfile"
           - --build-arg
           - "ODOO_VERSION={{ version }}"
           - --pull

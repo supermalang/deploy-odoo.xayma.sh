@@ -587,7 +587,7 @@ package, which the stock `odoo` image doesn't ship. `tasks/_ensure-odoo-image.ym
    Hub **access token**, not your account password) when set, for private
    repos.
 2. If it's missing and `odoo_image_build.enabled` is `true` (default
-   `false`): builds it from `files/odoo-image/Dockerfile` (`FROM
+   `false`): builds it from `files/odoo-image/Containerfile` (`FROM
    odoo:{version}.0` + `pip install redis`) and pushes it, via `nerdctl`
    against **k3s's own embedded containerd** (`k3s_containerd_socket`) —
    deliberately not a separate Docker daemon, since k3s already ships a
@@ -603,14 +603,19 @@ To activate it: install `nerdctl-full` on the k3s node (the execution
 host), set `odoo_image_build.enabled: true`, point `odoo_image_repo` at
 your registry namespace (e.g. `yourdockerhubuser/xayma-odoo`), and add
 `vault_odoo_dockerhub_username`/`vault_odoo_dockerhub_token` to the vault.
-The Dockerfile itself was written without access to a container runtime
-to build-test it — verify the first real build actually starts a working
-container before relying on it in production.
+The build file itself (`files/odoo-image/Containerfile` — named
+`Containerfile`, not `Dockerfile`: this repo's `nerdctl build` was verified
+against a live host to ignore `-f`/`--file` entirely and unconditionally
+look for `Containerfile` in the build context, so the file is named to
+match rather than fight it) was written without access to a container
+runtime to build-test it — verify the first real build actually starts a
+working container before relying on it in production.
 
 If you'd rather not give this role container-build access at all, push
 the tag yourself from wherever you already build images (`docker build
 --build-arg ODOO_VERSION={version} -t {odoo_image_repo}:{version}.0
-files/odoo-image/ && docker push ...` — or the `nerdctl` equivalent) and
+-f files/odoo-image/Containerfile files/odoo-image/ && docker push ...` —
+or the `nerdctl` equivalent) and
 leave `odoo_image_build.enabled` at `false` — the existence check still
 runs, it just never needs to build anything once the tag is there.
 
