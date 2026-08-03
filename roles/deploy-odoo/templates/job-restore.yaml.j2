@@ -46,6 +46,9 @@ spec:
             - secretRef: {name: "{{ minio_secret_name }}"}
           volumeMounts:
             - {name: restore, mountPath: /restore}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
         - name: pg-restore
           image: postgres:{{ versions.postgres }}
           command:
@@ -64,6 +67,9 @@ spec:
                   key: POSTGRES_PASSWORD
           volumeMounts:
             - {name: restore, mountPath: /restore}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
       containers:
         - name: filestore-restore
           image: busybox:{{ versions.busybox }}
@@ -78,6 +84,9 @@ spec:
           volumeMounts:
             - {name: restore, mountPath: /restore}
             - {name: filestore, mountPath: /filestore}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 200m, memory: 256Mi}
       volumes:
         - {name: restore, emptyDir: {}}
         - name: filestore

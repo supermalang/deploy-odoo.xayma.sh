@@ -52,6 +52,9 @@ spec:
                   key: POSTGRES_PASSWORD
           volumeMounts:
             - {name: backup, mountPath: /backup}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
         # No pipe here (tar writes the gzip itself), so this was never
         # subject to the pipefail bug above - `set -eu` already fails the
         # container on a real tar error. Still floored on size: a genuinely
@@ -79,6 +82,9 @@ spec:
           volumeMounts:
             - {name: filestore, mountPath: /filestore}
             - {name: backup, mountPath: /backup}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 200m, memory: 256Mi}
       containers:
         - name: rclone-upload
           image: rclone/rclone:{{ versions.rclone }}
@@ -98,6 +104,9 @@ spec:
             - secretRef: {name: "{{ minio_secret_name }}"}
           volumeMounts:
             - {name: backup, mountPath: /backup}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
       volumes:
         - {name: backup, emptyDir: {}}
         - name: filestore

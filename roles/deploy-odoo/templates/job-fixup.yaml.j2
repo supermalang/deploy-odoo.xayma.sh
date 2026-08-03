@@ -41,6 +41,12 @@ spec:
           volumeMounts:
             - {name: config, mountPath: /config, readOnly: true}
             - {name: etc-odoo, mountPath: /etc/odoo}
+          # Required by xayma-odoo-quota - see job-init.yaml.j2's identical
+          # render-config for why: without this the pod is rejected at
+          # admission and never even appears.
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
       containers:
         - name: fixup
           # --no-http below means session_redis's own runtime is never

@@ -84,3 +84,6 @@ spec:
             - {name: RCLONE_CONFIG_SNAPSHOT_ACL, value: private}
           envFrom:
             - secretRef: {name: "{{ minio_secret_name }}"}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 128Mi}

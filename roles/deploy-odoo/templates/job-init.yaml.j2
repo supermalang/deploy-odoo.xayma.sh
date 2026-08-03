@@ -40,6 +40,15 @@ spec:
           volumeMounts:
             - {name: config, mountPath: /config, readOnly: true}
             - {name: etc-odoo, mountPath: /etc/odoo}
+          # Required by xayma-odoo-quota: a ResourceQuota that constrains
+          # requests/limits forces EVERY container in the pod to declare
+          # them, initContainers included - without this the pod is
+          # rejected at admission and never even appears (not Pending -
+          # simply never created), which is why the Job just sits with 0
+          # active/succeeded/failed until activeDeadlineSeconds kills it.
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
       containers:
         - name: init
           # --no-http below means session_redis's own runtime is never
