@@ -67,10 +67,31 @@
 # already-open connections - avoids needing a psql client inside the
 # (minimal) PgBouncer image just to run RELOAD. Assumes pgbouncer is PID 1
 # in its container, true for the pinned edoburu/pgbouncer image.
+#
+# Shells out to the real `kubectl` binary rather than
+# kubernetes.core.k8s_exec (which goes through the Python `kubernetes`
+# client library, a different code path against the same API) - confirmed
+# live, twice, on two separate tenant deploys: the module's exec
+# consistently fails with a truncated "OCI runtime exec failed: exec
+# failed: unabl..." while the IDENTICAL command via plain `kubectl exec`
+# (same pod, same container, same args) succeeds every time. Not this
+# role's bug to fix - just not worth depending on a module with a live,
+# reproducible incompatibility here when the working alternative is this
+# cheap.
 - name: "RELOAD PgBouncer so the new tenant caps take effect"
-  kubernetes.core.k8s_exec:
-    kubeconfig: "{{ kubeconfig_path }}"
-    namespace: "{{ xayma_namespace }}"
-    pod: "{{ pgbouncer_pod_name }}"
-    container: pgbouncer
-    command: ["kill", "-HUP", "1"]
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ kubeconfig_path }}"
+      - -n
+      - "{{ xayma_namespace }}"
+      - exec
+      - "{{ pgbouncer_pod_name }}"
+      - -c
+      - pgbouncer
+      - --
+      - kill
+      - -HUP
+      - "1"
+  changed_when: false
