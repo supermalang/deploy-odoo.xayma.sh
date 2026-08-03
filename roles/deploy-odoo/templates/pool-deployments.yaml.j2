@@ -63,6 +63,19 @@ spec:
           volumeMounts:
             - {name: config, mountPath: /config, readOnly: true}
             - {name: etc-odoo, mountPath: /etc/odoo}
+          # Required by xayma-odoo-quota: a ResourceQuota that constrains
+          # requests/limits forces EVERY container in the pod to declare
+          # them, initContainers included - without this the ReplicaSet
+          # can't create a pod at all (ReplicaFailure on the Deployment).
+          # Nominal: this only runs a `sed` over one config file, so these
+          # exist to satisfy the quota, not to bound real work.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
       containers:
         - name: odoo
           image: "{{ odoo_image_repo }}:{{ version }}.0"
@@ -163,6 +176,19 @@ spec:
           volumeMounts:
             - {name: config, mountPath: /config, readOnly: true}
             - {name: etc-odoo, mountPath: /etc/odoo}
+          # Required by xayma-odoo-quota: a ResourceQuota that constrains
+          # requests/limits forces EVERY container in the pod to declare
+          # them, initContainers included - without this the ReplicaSet
+          # can't create a pod at all (ReplicaFailure on the Deployment).
+          # Nominal: this only runs a `sed` over one config file, so these
+          # exist to satisfy the quota, not to bound real work.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
       containers:
         - name: odoo
           image: "{{ odoo_image_repo }}:{{ version }}.0"
@@ -245,6 +271,19 @@ spec:
           volumeMounts:
             - {name: config, mountPath: /config, readOnly: true}
             - {name: etc-odoo, mountPath: /etc/odoo}
+          # Required by xayma-odoo-quota: a ResourceQuota that constrains
+          # requests/limits forces EVERY container in the pod to declare
+          # them, initContainers included - without this the ReplicaSet
+          # can't create a pod at all (ReplicaFailure on the Deployment).
+          # Nominal: this only runs a `sed` over one config file, so these
+          # exist to satisfy the quota, not to bound real work.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
       containers:
         - name: odoo
           image: "{{ odoo_image_repo }}:{{ version }}.0"

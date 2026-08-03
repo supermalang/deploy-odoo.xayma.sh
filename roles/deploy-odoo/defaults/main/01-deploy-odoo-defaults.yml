@@ -259,7 +259,10 @@ priorityclass:
 versions:
   odoo: "19"                     # survey fallback only; real deploys pass `version` explicitly
   postgres: "16.6-bookworm"       # ONE shared StatefulSet for the tier (see pg_topology)
-  pgbouncer: "1.23.1-p2"          # edoburu/pgbouncer
+  # NOTE: edoburu/pgbouncer tags are v-prefixed from v1.23.0 onward (1.22.x
+  # and earlier are not) - dropping the "v" yields a "not found"
+  # ImagePullBackOff on docker.io, not a clear error.
+  pgbouncer: "v1.23.1-p2"         # edoburu/pgbouncer
   redis: "7.4.1-alpine3.20"
   postgres_exporter: "v0.16.0"    # quay.io/prometheuscommunity/postgres-exporter
   busybox: "1.38.0"               # suspend-backend + config-merge initContainers

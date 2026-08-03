@@ -95,6 +95,14 @@ spec:
         - namespaceSelector:
             matchLabels:
               xayma.sh/network-zone: observability
+        # postgres-exporter runs INSIDE xayma-odoo (zone webservers, not
+        # observability), carries no xayma.sh/job-role, and isn't pgbouncer
+        # or a pool pod - it matched none of the above and default-deny-
+        # ingress silently CrashLoopBackOff'd it (connection refused, not a
+        # timeout - kube-router rejects rather than drops).
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres-exporter
       ports:
         - port: 5432
 ---
