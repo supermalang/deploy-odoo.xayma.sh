@@ -543,6 +543,23 @@ Known caveats
   package the addon imports — without it, a tenant's first session access
   on any pool pod throws, not at pod startup. See "Custom Odoo image"
   below for how that gets built automatically (opt-in).
+- **`role_path`/`playbook_dir` are control-node paths, always.** This whole
+  role runs `hosts: all` over SSH (`become: true`, never `connection:
+  local`), so any task that shells out to something running ON the managed
+  node (like `_ensure-odoo-image.yml`'s `nerdctl build`) cannot hand it a
+  `{{ role_path }}/...` path directly — that path only exists inside
+  wherever `ansible-playbook`/AWX's execution environment itself runs
+  (e.g. an AWX job's `/runner/project` checkout), not on the k3s node.
+  Confirmed live: a `nerdctl build` given that path failed with "no such
+  file or directory" regardless of the build file's name or whether `-f`
+  was passed explicitly — the whole directory was simply absent on the
+  host actually running the command. Fixed by `copy`-ing the build
+  context to the managed node first (`/tmp/xayma-odoo-image-build/`) and
+  building from that path instead. Any new task that needs a
+  control-node-side file (templates, `files/`, etc.) on the managed node
+  needs the same treatment — `copy`/`template` do this correctly because
+  they're explicitly designed for control-node → managed-node transfer;
+  a bare `command`/`shell` referencing `role_path` is not.
 - **Single-node SLA statement.** This platform is one k3s node. The HPA/
   PDB/anti-affinity exist and are correct, but they cannot provide any
   actual redundancy until a second node exists — see "Before adding node 2".
@@ -587,12 +604,17 @@ package, which the stock `odoo` image doesn't ship. `tasks/_ensure-odoo-image.ym
    Hub **access token**, not your account password) when set, for private
    repos.
 2. If it's missing and `odoo_image_build.enabled` is `true` (default
-   `false`): builds it from `files/odoo-image/Containerfile` (`FROM
-   odoo:{version}.0` + `pip install redis`) and pushes it, via `nerdctl`
-   against **k3s's own embedded containerd** (`k3s_containerd_socket`) —
-   deliberately not a separate Docker daemon, since k3s already ships a
-   container runtime and `nerdctl` is Docker-CLI-compatible against it
-   directly. This needs the **`nerdctl-full`** release specifically
+   `false`): copies `files/odoo-image/` from the control node to
+   `/tmp/xayma-odoo-image-build/` **on the managed node** (see "Known
+   caveats" — `role_path` is a control-node-only path, and this whole role
+   runs over SSH on the managed node, so the build context has to be
+   staged there first), then builds `Dockerfile` (`FROM odoo:{version}.0`
+   + `pip install redis`) from that staged copy and pushes it, via
+   `nerdctl` against **k3s's own embedded containerd**
+   (`k3s_containerd_socket`) — deliberately not a separate Docker daemon,
+   since k3s already ships a container runtime and `nerdctl` is
+   Docker-CLI-compatible against it directly. This needs the
+   **`nerdctl-full`** release specifically
    (https://github.com/containerd/nerdctl/releases) — the bare `nerdctl`
    binary doesn't bundle `buildkitd`, which `nerdctl build` requires.
 3. If it's missing and `odoo_image_build.enabled` is `false`: fails fast
@@ -603,19 +625,15 @@ To activate it: install `nerdctl-full` on the k3s node (the execution
 host), set `odoo_image_build.enabled: true`, point `odoo_image_repo` at
 your registry namespace (e.g. `yourdockerhubuser/xayma-odoo`), and add
 `vault_odoo_dockerhub_username`/`vault_odoo_dockerhub_token` to the vault.
-The build file itself (`files/odoo-image/Containerfile` — named
-`Containerfile`, not `Dockerfile`: this repo's `nerdctl build` was verified
-against a live host to ignore `-f`/`--file` entirely and unconditionally
-look for `Containerfile` in the build context, so the file is named to
-match rather than fight it) was written without access to a container
-runtime to build-test it — verify the first real build actually starts a
-working container before relying on it in production.
+The Dockerfile itself (`files/odoo-image/Dockerfile`) was written without
+access to a container runtime to build-test it — verify the first real
+build actually starts a working container before relying on it in
+production.
 
 If you'd rather not give this role container-build access at all, push
 the tag yourself from wherever you already build images (`docker build
 --build-arg ODOO_VERSION={version} -t {odoo_image_repo}:{version}.0
--f files/odoo-image/Containerfile files/odoo-image/ && docker push ...` —
-or the `nerdctl` equivalent) and
+files/odoo-image/ && docker push ...` — or the `nerdctl` equivalent) and
 leave `odoo_image_build.enabled` at `false` — the existence check still
 runs, it just never needs to build anything once the tag is there.
 

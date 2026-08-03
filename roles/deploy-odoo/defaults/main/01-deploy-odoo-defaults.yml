@@ -207,7 +207,7 @@ redis:
 # module catches the ImportError and continues with `redis = None`, then
 # crashes on first real use, not at startup). `odoo_image_repo` must point
 # at a registry repo (e.g. "yourdockerhubuser/xayma-odoo") that carries a
-# `{version}.0`-tagged image built from files/odoo-image/Containerfile (which
+# `{version}.0`-tagged image built from files/odoo-image/Dockerfile (which
 # layers `pip install redis` onto the stock image) - see
 # tasks/_ensure-odoo-image.yml + odoo_image_build below for how that tag
 # gets there automatically, and README "Requirements"/"Custom Odoo image".
