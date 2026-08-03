@@ -69,7 +69,11 @@
     - {name: "{{ pg_exporter_role }}", password: "{{ _pg_exporter_password }}"}
   loop_control:
     label: "{{ item.name }}"
-  no_log: true
+  # TEMP-DEBUG (see job_81.txt failure, all 4 items censored to item=None):
+  # flipped to false to see the real psycopg error in the AWX job log for
+  # one run. REVERT to `true` before this is considered done again - these
+  # are the fixed platform role passwords.
+  no_log: false
 
 - name: Grant the fixed platform roles their scoped privileges
   community.postgresql.postgresql_membership:
