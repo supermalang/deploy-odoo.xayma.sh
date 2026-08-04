@@ -2,12 +2,11 @@
 ---
 # ONE shared Postgres for the entire tier (pg_topology: shared - see
 # vars/main.yml's `pg_target` seam; per_version/per_pool are reserved for
-# later). Node-pinned DELIBERATELY (its PVC is local-path) - see README
-# "Migrating platform singletons to node 2". `postgres.node_selector`
-# defaults to {} (scheduler's free choice); moving it to a real node is a
-# guarded, data-moving runbook (snapshot every tenant, recreate fresh here,
-# restore every tenant), not just flipping this value - see the README
-# section above.
+# later). Node-pinned DELIBERATELY (its PVC is local-path) - see
+# 01-deploy-odoo-defaults.yml's `postgres.node_selector` comment for the
+# guarded, data-moving procedure (backup every tenant, recreate fresh here,
+# restore every tenant) moving this to a different node actually requires -
+# NOT just flipping that value.
 apiVersion: v1
 kind: Secret
 metadata:

@@ -11,7 +11,7 @@
 # DB-only, deliberately - see job-backup.yaml.j2's identical note: filestore
 # lives in the platform MinIO's odoo-filestore bucket directly now, which
 # this Job has no reason to touch (nothing here can roll it back to a prior
-# point in time either - see README "Known caveats").
+# point in time either - see README "Backups & Restore").
 apiVersion: batch/v1
 kind: Job
 metadata:

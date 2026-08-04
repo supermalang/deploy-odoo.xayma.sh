@@ -3,8 +3,10 @@
 # {pool}-http is the ONLY autoscaled Deployment (cron/gevent are always
 # exactly 1 replica - see pool-deployments.yaml.j2). Conservative behavior:
 # scale up at most 1 pod/60s, scale down only after a 300s stabilization
-# window - correct-but-inert on a single node today (extra pods just pend
-# if there's no room - see README "Before adding node 2").
+# window. Extra pods pend, not fail, if every node carrying
+# odoo.tenants_node_label is already full - see README "Capacity planning"
+# for sizing guidance and "Configuration" step 2 for the hard nodeAffinity
+# these pods carry.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

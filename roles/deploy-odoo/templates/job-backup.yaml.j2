@@ -3,15 +3,20 @@
 # Single-tenant pg_dump -> MinIO
 # snapshots/{customer}/{instance}/{{ '{_backup_kind}' }}/{timestamp}/ - the
 # same layout job-restore.yaml.j2 expects. Designed to be driven by an AWX
-# schedule (app-driven loop over tenants - see README "AWX"). `_backup_kind`
+# schedule (app-driven loop over tenants - see README "Actions"). `_backup_kind`
 # (daily|adhoc) is set by the caller (backup-tenant.yml or delete-tenant.yml's
 # final safety backup) - see tasks/_run-tenant-backup.yml.
 #
 # DB-only, deliberately - filestore moved to the platform MinIO's
-# odoo-filestore bucket directly (fs_attachment_s3, see job-fixup.yaml.j2),
-# a live, already-durable store this Job has no reason to also snapshot.
-# Its own durability (versioning/replication) is the platform MinIO's
-# concern, not this role's - see README "Known caveats".
+# odoo-filestore bucket directly (fs_attachment_s3, see job-fixup.yaml.j2).
+# This Job does NOT also snapshot it, and unlike the name "backup" might
+# imply, that means filestore currently has NO backup of any kind - the
+# platform MinIO has no bucket versioning/replication configured (verified
+# against install-platform.xayma.sh's deploy-minio role: mode: standalone,
+# replicas: 1), so a deleted/overwritten attachment is unrecoverable, not
+# just un-rollback-able to a point in time. See README "Backups & Restore"
+# for the full exposure and what closes it (platform-side: enable bucket
+# versioning on odoo-filestore).
 apiVersion: batch/v1
 kind: Job
 metadata:

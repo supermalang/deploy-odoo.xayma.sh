@@ -127,6 +127,16 @@ Architecture
   tenant database, via one `fs.storage` record `job-fixup.yaml.j2` upserts
   idempotently. This statelessness is what makes the hard node-affinity
   gate in "Configuration" safe — there's no local data to strand.
+- **Both clones are a shallow `git fetch --depth 1` of exactly the pinned
+  ref** (works for a branch name or a literal SHA — `git clone --branch`
+  can't take a SHA, so this form is used for both instead of two
+  different code paths), not a full clone — cheap on every pod start/HPA
+  scale-up, but it does mean **pod start now depends on GitHub being
+  reachable and the deploy key still being valid**: a GitHub outage, a
+  rate-limit, or a revoked key means no new pool pod can start anywhere in
+  the cluster. Baking addons into the custom image this role already
+  builds (see "Custom Odoo image") removes that dependency entirely, if it
+  ever becomes a problem.
 - **ONE shared Postgres** (StatefulSet, one PVC, superuser from a vault
   seed) for the entire tier. **PgBouncer** (transaction mode) sits in
   front of it for `{pool}-http` only — see "PgBouncer & per-tenant
@@ -424,10 +434,52 @@ scoped `xayma.snapshots` MinIO user (Get/Put/Delete + list the
 Filestore is deliberately not part of either: it lives in the separate,
 always-live `odoo-filestore` bucket — restoring an old `pg_dump` can
 leave DB rows referencing attachments since changed/deleted there, with
-no point-in-time filestore rollback. Filestore's own durability
-(versioning/replication) is the platform MinIO's concern, not this
-role's. `check-snapshot-freshness` (default 30h) independently verifies
-every live, non-stopped tenant actually has a recent one.
+no point-in-time filestore rollback. `check-snapshot-freshness` (default
+30h) independently verifies every live, non-stopped tenant actually has a
+recent DB snapshot.
+
+**Filestore currently has no backup of any kind, and this platform's
+MinIO cannot provide one on its own.** "No point-in-time rollback" (above)
+undersells the real exposure: `install-platform.xayma.sh`'s `deploy-minio`
+is `mode: standalone`, `replicas: 1`, with **no bucket versioning and no
+replication configured anywhere**. A user-deleted attachment or a bad
+prefix delete (e.g. a `delete` action's `job-purge-filestore.yaml.j2`
+firing against the wrong prefix) is **unrecoverable** — not "can't roll
+back to a point in time", but "gone, permanently, with nothing to restore
+from". Enabling bucket versioning on `odoo-filestore` is a platform-side
+change (`install-platform.xayma.sh`'s `deploy-minio` role) — out of scope
+for this repo, but load-bearing for the claim above to become true again.
+
+### Migrating attachments off the old PVC
+
+Before this repo moved `ir.attachment` storage to S3, it lived on a
+per-tenant `odoo-filestore` PVC (`pvcs.yaml.j2`, since deleted). As of
+this writing no tenant has ever been deployed against that PVC-based
+model on this platform — this migration question is currently moot here,
+and this note exists so it doesn't have to be re-investigated later. If
+that ever stops being true (e.g. this repo is reused against a cluster
+that still has tenants from before the S3 migration), the old
+`odoo-filestore`/`odoo-addons` PVCs are orphaned, not removed — their
+bytes still exist, but nothing moves them into S3 and nothing points at
+them anymore. The one-off fix, per tenant, using the primitive OCA/storage
+already ships (`ir.attachment.force_storage()` — see
+`fs_storage_upsert.py.j2`'s and `files/force_storage.py`'s header
+comments):
+
+1. Deploy the tenant once under the current model (`odoo_action=deploy`)
+   so its `fs.storage` record exists and is the default.
+2. Mount the tenant's **old** `odoo-filestore` PVC (read-only) into a
+   throwaway pod alongside the current `etc-odoo`/`addons` setup, at the
+   same path Odoo's local filestore used to live at (`/var/lib/odoo`).
+3. `odoo shell -c ... -d <db> --no-http`, then `env['ir.attachment'].force_storage()`
+   + `env.cr.commit()` — it walks every attachment still pointing at local
+   storage and copies it onto the configured default (S3) storage.
+4. Confirm (spot-check attachments load correctly), then delete the
+   orphaned `odoo-filestore`/`odoo-addons` PVCs.
+
+Deliberately a manual, one-off runbook — not an automated `odoo_action`.
+It only ever needs to run once per tenant, ever, and only for tenants that
+predate this repo's S3 migration.
 
 Known caveats
 -------------
@@ -450,15 +502,6 @@ Known caveats
   doesn't include the `redis` Python package the addon imports — without
   it, a tenant's first session access on any pool pod throws, not at pod
   startup. See "Custom Odoo image".
-- **`fs_attachment`'s install-time-icon gotcha.** Attachments created in
-  the same transaction the module itself loads in (icons during `-i`)
-  still follow the `ir_attachment.location` system parameter, not the
-  `fs.storage` record — `job-fixup.yaml.j2` sets it to `db` as the
-  documented workaround, but only after `job-init.yaml.j2`'s `-i` already
-  ran, so anything caught during that earlier `-i` still lands on the
-  pod's now-ephemeral filesystem. Low blast radius in practice —
-  `fs_attachment`'s own `force_db_for_default_attachment_rules` default
-  already routes small images/JS/CSS to the DB regardless.
 - **`role_path`/`playbook_dir` are control-node paths, always.** This role
   runs over SSH against the managed node — a task that shells out to
   something running ON that node (e.g. `_ensure-odoo-image.yml`'s

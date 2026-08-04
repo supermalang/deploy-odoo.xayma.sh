@@ -43,8 +43,8 @@
       db_maxconn: "{{ _resolved_spec.db_maxconn }}"
     tenant_spec:
       # fs_storage/fs_attachment/fs_attachment_s3 (S3-backed ir.attachment
-      # storage - see job-fixup.yaml.j2's fs.storage record, README "Before
-      # adding node 2") are MANDATORY platform infrastructure, not a plan/
+      # storage - see job-fixup.yaml.j2's fs.storage record, README
+      # "Architecture") are MANDATORY platform infrastructure, not a plan/
       # tenant choice, exactly like session_redis - appended here so no plan
       # catalog entry needs to remember them and no plan_spec sent by the
       # app can accidentally omit them. `unique` guards against a duplicate

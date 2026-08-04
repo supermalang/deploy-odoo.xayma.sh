@@ -75,7 +75,7 @@ pg_topology: shared
 # now sends `plan_spec` as a real nested JSON value over the AWX API
 # directly, so there is no longer a reason to flatten it. The ONE manual-run
 # survey field that remains is `plan_spec_json` (a JSON string, parsed by
-# tasks/_resolve-plan-spec.yml) - see README "AWX".
+# tasks/_resolve-plan-spec.yml) - see README "Input contract".
 plan_spec_hard_fallback:
   workers: 2
   replicas_min: 1
@@ -104,15 +104,22 @@ plan_spec_hard_fallback:
 odoo:
   storage_class: local-path
 
-  # PREFERRED (soft) node placement for pool pods - see README "Before
-  # adding node 2". The web tier carries no PVCs at all now (see
-  # addons_repo_url/filestore_bucket above), so unlike postgres.node_selector
-  # below (a HARD requirement - its PVC really is pinned to one node) this
-  # is a preference the scheduler can override: a pod still lands on any
-  # node if the preferred one is full, draining, or doesn't exist yet. This
-  # role does NOT apply this label to any node itself - `kubectl label node
-  # <node-2-name> xayma.sh/node-role=tenants` is a one-time manual step
-  # (see README "Manual steps"). Empty dict = no preference at all.
+  # REQUIRED (hard) node placement for pool pods - see README
+  # "Configuration" step 2 and pool-deployments.yaml.j2's nodeAffinity
+  # (requiredDuringSchedulingIgnoredDuringExecution, not preferred). The web
+  # tier carries no PVCs at all (see addons_repo_url/filestore_bucket
+  # above), which is what makes a HARD requirement safe here - there's no
+  # local data that could be stranded on a node a pod stops being scheduled
+  # onto. A pod will NOT land on any node lacking this label, and if NO
+  # node anywhere carries it, every pool pod stays Pending (see
+  # tasks/_resolve-pool.yml's readyReplicas wait, which then times out and
+  # fails the run) - this is not a soft preference the scheduler can fall
+  # back from. This role does NOT apply the label itself - `kubectl label
+  # node <name> xayma.sh/node-role=tenants` is a one-time manual step per
+  # node meant to host tenant workloads (see README "Configuration"). Empty
+  # dict = no nodeAffinity block rendered at all (Jinja: `{}` is falsy), so
+  # the scheduler picks freely - only relevant for a from-scratch bootstrap
+  # before any node has been labelled yet.
   tenants_node_label: {key: "xayma.sh/node-role", value: "tenants"}
 
   # Platform MinIO (internal, snapshot target for backup/restore) - endpoint/
@@ -135,7 +142,7 @@ odoo:
   # says a credential that can touch live attachment data should never also
   # be the one that can touch backups (or vice versa). This repo does not
   # and should not create the `xayma.filestore` MinIO user/policy/bucket -
-  # see README "Manual steps".
+  # see README "Vault".
   filestore_bucket: odoo-filestore
   filestore_endpoint: "http://minio.xayma-storage.svc.cluster.local:9000"
   filestore_access_key: "xayma.filestore"
@@ -190,16 +197,18 @@ odoo:
 # odoo_action=check-snapshot-freshness (tasks/check-snapshot-freshness.yml) -
 # how stale a tenant's newest daily snapshot may be before the check fails
 # (surfaced as an AWX Job failure -> the notification_templates_error wired
-# on the manually-configured `odoo-tenant` Job Template - see README "AWX").
-# One nightly cycle plus slack.
+# on the manually-configured `odoo-tenant` Job Template - see README
+# "Observability"). One nightly cycle plus slack.
 #
 # max_age_hours only proves a snapshot is RECENT, not that it is VALID - a
 # ~20-byte empty dump from the pipefail bug above would still pass this
 # check. min_dump_bytes closes that blind spot by having the freshness Job
 # also assert object size (rclone lsl), not just recency. Filestore is no
-# longer part of this snapshot at all (see odoo.filestore_bucket) - its
-# durability is the platform MinIO's own concern (bucket versioning/
-# replication), not this role's.
+# longer part of this snapshot at all (see odoo.filestore_bucket) and this
+# check says nothing about it either - the platform MinIO currently has no
+# bucket versioning/replication configured at all, so filestore has no
+# backup of any kind right now, not merely "unchecked by this action" -
+# see README "Backups & Restore".
 snapshot_freshness:
   max_age_hours: 30
   min_dump_bytes: 1024
@@ -213,18 +222,22 @@ postgres:
   mem_request: "1Gi"
   mem_limit: "4Gi"
   max_connections: 200
-  # Node-pinned DELIBERATELY (its PVC is local-path, node-pinned) - see
-  # README "Migrating platform singletons to node 2". Empty = scheduler's
-  # free choice; moving this to a real node requires the guarded snapshot/
-  # restore runbook there, NOT just setting this - flipping it alone
-  # strands the pod Pending against a PV that can't follow it.
+  # Node-pinned DELIBERATELY (its PVC is local-path, so wherever it's first
+  # scheduled is where its data physically lives). Empty = scheduler's free
+  # choice. Setting this LATER to move Postgres to a specific node does NOT
+  # move the PV with it - the pod goes Pending against a PV that can't
+  # follow. Treat that as a data-moving operation, not a config change:
+  # back up every tenant (odoo_action=backup, or an out-of-band pg_dump),
+  # delete the `pg` StatefulSet + its `data-pg-0` PVC, set this, redeploy
+  # (recreates Postgres fresh/empty on the new node), then
+  # odoo_action=restore per tenant.
   node_selector: {}
 
 # PgBouncer (transaction-mode pooling in front of the shared Postgres) - no
 # PVC at all (its state, tenants.ini, is externalized to a ConfigMap - see
 # tasks/_sync-pgbouncer-tenants.yml), so unlike postgres.node_selector above,
 # changing this and redeploying is genuinely all it takes to move it - no
-# data to strand, see README "Migrating platform singletons to node 2".
+# data to strand.
 pgbouncer:
   default_pool_size: 5
   max_client_conn: 2000
@@ -254,9 +267,10 @@ redis:
   maxmemory_policy: "allkeys-lru"
   # Node-pinned (its PVC is local-path) like postgres.node_selector, but
   # LOWER stakes if moved carelessly: losing this data only forces every
-  # tenant to log in again (session cache, not tenant data) - see README
-  # "Migrating platform singletons to node 2" for why this one does NOT
-  # need the guarded snapshot/restore treatment Postgres does.
+  # tenant to log in again next time (session cache, not tenant data). So
+  # unlike Postgres, moving it is just: set this, redeploy, then delete the
+  # now-orphaned old PVC (`data-redis-0`) so the StatefulSet provisions a
+  # fresh one on the new node - no backup/restore needed first.
   node_selector: {}
 
 # The stock Docker Hub `odoo` image does NOT include the `redis` Python

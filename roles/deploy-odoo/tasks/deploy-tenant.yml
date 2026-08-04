@@ -117,9 +117,9 @@
     label: "{{ item }}"
 
 # Materialize this tenant's PgBouncer per-database cap BEFORE the init Job -
-# same sequencing as README "Tenant lifecycle" (the init Job itself still
-# talks to PG directly, never through PgBouncer - this ordering is about
-# establishing desired state deterministically, not a runtime dependency).
+# the init Job itself still talks to PG directly, never through PgBouncer,
+# so this ordering is about establishing desired state deterministically,
+# not a runtime dependency.
 - name: "Write this tenant's PgBouncer per-db entry [{{ tenant_name }}]"
   ansible.builtin.include_tasks: _sync-pgbouncer-tenants.yml
   vars:
