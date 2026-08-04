@@ -45,12 +45,55 @@
     name: "{{ instance_slug }}"
     state: absent
 
-- name: "Purge the tenant's filestore prefix from the odoo-filestore bucket [{{ tenant_name }}]"
+- name: "Apply the filestore purge Job [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
     namespace: "{{ xayma_namespace }}"
     template: job-purge-filestore.yaml.j2
+  register: _delete_purge_job
+
+# This used to apply the Job and move straight on to "Delete all labelled
+# resources" below WITHOUT waiting for it - that step matches
+# `kind: Job` on this tenant's own customer/instance labels, which this
+# purge Job carries too, so it would delete (and cascade-terminate) the
+# purge Job's pod out from under it while it was very likely still
+# running, with nothing anywhere checking whether it had even started to
+# succeed. job-purge-filestore.yaml.j2 now fails loudly on a real error
+# instead of `|| true`-ing past it (see its own header comment) - that
+# fix is meaningless if nothing ever waits long enough to see the result.
+- name: "Wait for the filestore purge Job to complete [{{ tenant_name }}]"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Job
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ _delete_purge_job.result.metadata.name }}"
+  register: _delete_purge_status
+  until: >-
+    _delete_purge_status.resources | length > 0 and
+    (_delete_purge_status.resources[0].status.succeeded | default(0) | int > 0 or
+     _delete_purge_status.resources[0].status.failed | default(0) | int > 0)
+  retries: 30
+  delay: 5
+
+- name: "Surface the filestore purge Job's pod logs on failure [{{ tenant_name }}]"
+  kubernetes.core.k8s_log:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "job-name={{ _delete_purge_job.result.metadata.name }}"
+  register: _delete_purge_logs
+  when: _delete_purge_status.resources[0].status.failed | default(0) | int > 0
+
+- name: "Assert the filestore purge Job succeeded [{{ tenant_name }}]"
+  ansible.builtin.assert:
+    that: _delete_purge_status.resources[0].status.succeeded | default(0) | int > 0
+    fail_msg: >-
+      {{ _delete_purge_job.result.metadata.name }} failed - pod logs:
+      {{ _delete_purge_logs.log | default('(no logs captured)') }}
+      The tenant database has already been dropped; the filestore prefix
+      may still exist (see README "Backups & Restore") - re-run
+      odoo_action=delete to retry the purge alone.
 
 - name: "Delete all labelled resources for this tenant [{{ tenant_name }}]"
   kubernetes.core.k8s:

@@ -179,13 +179,22 @@
     state: present
     namespace: "{{ xayma_namespace }}"
     template: job-fixup.yaml.j2
+  register: _deploy_fixup_job
 
+# job-fixup.yaml.j2's Job name carries a timestamp suffix
+# (fixup-{{ instance_slug }}-{{ ansible_date_time... }}), so it is NEVER
+# just "fixup-{{ instance_slug }}" - waiting/asserting on that guessed
+# fixed name would never match, timing out after `retries` and then
+# indexing resources[0] on an empty list. Use the apply task's own
+# registered name instead, same pattern restore-tenant.yml's fixup call
+# and every other timestamped Job (backup/restore/snapshot-freshness-check)
+# already use.
 - name: "Wait for the fixup Job to complete [{{ tenant_name }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Job
     namespace: "{{ xayma_namespace }}"
-    name: "fixup-{{ instance_slug }}"
+    name: "{{ _deploy_fixup_job.result.metadata.name }}"
   register: _deploy_fixup_status
   until: >-
     _deploy_fixup_status.resources | length > 0 and
@@ -199,7 +208,7 @@
     kubeconfig: "{{ kubeconfig_path }}"
     namespace: "{{ xayma_namespace }}"
     label_selectors:
-      - "job-name=fixup-{{ instance_slug }}"
+      - "job-name={{ _deploy_fixup_job.result.metadata.name }}"
   register: _deploy_fixup_logs
   when: _deploy_fixup_status.resources[0].status.failed | default(0) | int > 0
 
@@ -207,7 +216,7 @@
   ansible.builtin.assert:
     that: _deploy_fixup_status.resources[0].status.succeeded | default(0) | int > 0
     fail_msg: >-
-      fixup-{{ instance_slug }} failed - pod logs:
+      {{ _deploy_fixup_job.result.metadata.name }} failed - pod logs:
       {{ _deploy_fixup_logs.log | default('(no logs captured)') }}
 
 - name: "Apply the tenant's custom-domain Certificate [{{ tenant_name }}]"
