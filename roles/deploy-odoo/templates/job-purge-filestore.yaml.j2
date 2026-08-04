@@ -28,9 +28,29 @@ spec:
           command:
             - /bin/sh
             - -c
-            - >-
-              set -eu;
-              rclone purge filestore:{{ odoo.filestore_bucket }}/{{ instance_slug }}/ || true
+            - |-
+              set -eu
+              # `rclone purge ... || true` used to report success on an
+              # auth failure, a NetworkPolicy block, or a MinIO outage too -
+              # exactly the objects this Job exists to guarantee don't leak
+              # forever. S3 has no real directories, so `rclone lsf`
+              # returning EMPTY WITH EXIT 0 is the genuine "nothing under
+              # this prefix" case (already purged, or never had any
+              # attachments) - safe to skip. A NON-ZERO exit from `lsf`
+              # itself is a real error (bad credentials, unreachable
+              # endpoint, etc.), not "prefix doesn't exist", and must fail
+              # the Job rather than be swallowed.
+              if out=$(rclone lsf "filestore:{{ odoo.filestore_bucket }}/{{ instance_slug }}/" 2>&1); then
+                if [ -n "$out" ]; then
+                  rclone purge "filestore:{{ odoo.filestore_bucket }}/{{ instance_slug }}/"
+                else
+                  echo "no objects under {{ instance_slug }}/ - nothing to purge"
+                fi
+              else
+                echo "$out" >&2
+                echo "FATAL: rclone lsf failed - cannot tell whether this tenant's filestore prefix is actually empty; treating as a real failure, not a no-op" >&2
+                exit 1
+              fi
           env:
             - {name: RCLONE_CONFIG_FILESTORE_TYPE, value: s3}
             - {name: RCLONE_CONFIG_FILESTORE_PROVIDER, value: Other}

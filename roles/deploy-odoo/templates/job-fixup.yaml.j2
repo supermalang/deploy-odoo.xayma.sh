@@ -35,10 +35,12 @@ spec:
             - -c
             - >-
               set -eu;
-              GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519"
-              git clone {{ odoo.addons_repo_url }} /addons;
+              export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519";
+              git init -q /addons;
               cd /addons;
-              git checkout {{ odoo.addons_repo_ref }}
+              git remote add origin {{ odoo.addons_repo_url }};
+              git fetch --depth 1 origin {{ odoo.addons_repo_ref }};
+              git checkout -q FETCH_HEAD
           volumeMounts:
             - {name: addons-deploy-key, mountPath: /keys, readOnly: true}
             - {name: addons, mountPath: /addons}
@@ -54,9 +56,11 @@ spec:
             - -c
             - >-
               set -eu;
-              git clone {{ odoo.oca_storage_repo_url }} /oca-addons;
+              git init -q /oca-addons;
               cd /oca-addons;
-              git checkout {{ odoo.oca_storage_repo_ref }}
+              git remote add origin {{ odoo.oca_storage_repo_url }};
+              git fetch --depth 1 origin {{ odoo.oca_storage_repo_ref }};
+              git checkout -q FETCH_HEAD
           volumeMounts:
             - {name: oca-addons, mountPath: /oca-addons}
           resources:
