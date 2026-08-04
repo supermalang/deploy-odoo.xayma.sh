@@ -1,0 +1,108 @@
+---
+# include_tasks helper (only when a NEW pool is about to be built, or
+# apply-plan is forcing a reapply - see _resolve-pool.yml's `_pool_apply_spec`
+# gate on the caller) - fails fast, before any pool pod that would depend on
+# odoo.addons_repo_url/odoo.addons_repo_ref actually working exists at all.
+# Same instinct as _assert-init-modules.yml ("fail fast rather than deep
+# inside a batch-low Job"), applied one level earlier: that check verifies a
+# TENANT's init_modules exist in an addons repo assumed to be usable at all;
+# this one verifies the repo/ref backing every pool pod's clone-addons
+# initContainer resolves and is usable in the first place.
+#
+# Runs IN-CLUSTER (a Job, in the pattern of job-fileops.yaml.j2/
+# _assert-init-modules.yml), not as a control-node `git`/`command` task -
+# the deploy key this needs only exists as the addons-deploy-key Secret in
+# the cluster; the control node has no access to it.
+#
+# Verified live (AWX job 118, odoo_action=deploy, plan=starter-tier-1): an
+# addons_repo_ref that doesn't resolve put every pool pod in
+# Init:CrashLoopBackOff on clone-addons with NOTHING in Ansible's own output
+# naming the cause - _resolve-pool.yml's readyReplicas wait below just
+# retried 60 times and timed out. This exists so that exact failure surfaces
+# HERE, with the real cause and the fix in the message, instead of there.
+- name: "Run the addons-repo preflight check [{{ pool_id }}]"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: job-fileops.yaml.j2
+  vars:
+    _fileops_name: "check-addons-repo-{{ pool_id }}-{{ ansible_date_time.iso8601_basic_short | lower }}"
+    _fileops_clone_addons: true
+    # session_redis is not optional (pool-configmap.yaml.j2's
+    # server_wide_modules = web,session_redis - see
+    # 01-deploy-odoo-defaults.yml's comment on that module) - a ref that
+    # resolves but lacks it would let clone-addons succeed and let THIS
+    # check pass, only for Odoo itself to fail to start in the
+    # {pool}-http/-cron/-gevent containers later. Checking for it here
+    # keeps that failure in this Job's log, not the odoo container's.
+    _fileops_command: >-
+      if [ ! -d /addons/session_redis ]; then
+        echo "MISSING: session_redis not found under /addons";
+        exit 1;
+      fi;
+      echo OK
+  register: _addonscheck_job
+
+- name: "Wait for the addons-repo preflight check to complete [{{ pool_id }}]"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Job
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ _addonscheck_job.result.metadata.name }}"
+  register: _addonscheck_status
+  until: >-
+    _addonscheck_status.resources | length > 0 and
+    (_addonscheck_status.resources[0].status.succeeded | default(0) | int > 0 or
+     _addonscheck_status.resources[0].status.failed | default(0) | int > 0)
+  retries: 30
+  delay: 3
+
+# Whichever container actually failed - clone-addons (the ref doesn't
+# resolve in odoo.addons_repo_url) or fileops (it resolves but the tree
+# lacks session_redis) - fetch both; exactly one will have real content.
+- name: "Fetch the clone-addons container's log on failure [{{ pool_id }}]"
+  kubernetes.core.k8s_log:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "job-name={{ _addonscheck_job.result.metadata.name }}"
+    container: clone-addons
+  register: _addonscheck_clone_logs
+  failed_when: false
+  when: _addonscheck_status.resources[0].status.failed | default(0) | int > 0
+
+- name: "Fetch the fileops container's log on failure [{{ pool_id }}]"
+  kubernetes.core.k8s_log:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "job-name={{ _addonscheck_job.result.metadata.name }}"
+    container: fileops
+  register: _addonscheck_fileops_logs
+  failed_when: false
+  when: _addonscheck_status.resources[0].status.failed | default(0) | int > 0
+
+- name: "Delete the addons-repo preflight check Job [{{ pool_id }}]"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ _addonscheck_job.result.metadata.name }}"
+
+- name: "Assert the addons-repo preflight check succeeded [{{ pool_id }}]"
+  ansible.builtin.assert:
+    that: _addonscheck_status.resources[0].status.succeeded | default(0) | int > 0
+    fail_msg: >-
+      odoo.addons_repo_url ({{ odoo.addons_repo_url }}) at
+      odoo.addons_repo_ref ({{ odoo.addons_repo_ref }}) is not usable to
+      build pool {{ pool_id }} - either that ref does not resolve in that
+      repo (push a commit to it, or correct odoo.addons_repo_ref to one
+      that exists), or the tree at that ref is missing session_redis
+      (vendor it from camptocamp/odoo-cloud-platform's 19.0 branch - the
+      same source 01-deploy-odoo-defaults.yml cites for Redis session
+      config - or push it to this repo directly). clone-addons log:
+      {{ _addonscheck_clone_logs.log | default('(no logs captured)') }}
+      fileops log: {{ _addonscheck_fileops_logs.log | default('(no logs captured)') }}

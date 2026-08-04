@@ -88,6 +88,15 @@
     template: pool-configmap.yaml.j2
   when: _pool_apply_spec | bool
 
+# Fail fast on an unusable odoo.addons_repo_url/odoo.addons_repo_ref
+# BEFORE building any pod that depends on it - see _assert-addons-repo.yml.
+# Same gate as the ConfigMap/Deployments/HPA above: only when a NEW pool is
+# actually about to be built (an already-existing pool's pods already
+# proved the ref worked when they started).
+- name: Assert the addons repo/ref this pool's pods will clone is usable
+  ansible.builtin.import_tasks: _assert-addons-repo.yml
+  when: _pool_apply_spec | bool
+
 - name: "Apply the pool's Deployments + Services (pool-scoped - create-only) [{{ pool_id }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
