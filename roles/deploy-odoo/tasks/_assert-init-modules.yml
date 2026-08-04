@@ -1,19 +1,36 @@
 ---
 # include_tasks helper (only when the init Job is actually about to run -
-# see deploy-tenant.yml) - fails fast if any of tenant_spec.init_modules
-# isn't present anywhere Odoo would actually look for it, rather than
-# letting `odoo -i` partially fail deep inside a batch-low Job.
+# see deploy-tenant.yml) - fails fast if any module tenant_spec.init_modules
+# needs, INCLUDING every module transitively pulled in by their own
+# `depends`, isn't present anywhere Odoo would actually look for it, rather
+# than letting `odoo -i` partially fail deep inside a batch-low Job.
+#
+# Walks the full dependency closure, not just the listed modules - a prior
+# version of this check only verified each LISTED module existed
+# somewhere, which let fs_storage pass (fs_storage itself is vendored,
+# real, present) while its own __manifest__.py depends on
+# server_environment, which wasn't on the addons path at all. That gap
+# surfaced two minutes later as a `UserError` inside the init Job itself -
+# exactly the "deep inside a batch-low Job" failure this check exists to
+# prevent, just one dependency level further down than it was checking.
+# Every addons-path entry is walked (Odoo's own bundled paths first, then
+# the tenant's private addons_repo_url, then every odoo.oca_repos entry -
+# same list pool-configmap.yaml.j2's addons_path and
+# _assert-addons-repo.yml derive from, not repeated by hand here) so a
+# missing transitive dependency anywhere in that chain is caught here,
+# with the missing module AND the manifest that required it named, not
+# just the top-level modules tenant_spec.init_modules actually lists.
 #
 # Runs from the REAL odoo image, not busybox - a bare-modules Job needs
 # visibility into Odoo's own bundled addons paths (base, web, mail, ...),
 # not just the freshly cloned addons repos. Checking only the cloned repos
 # used to false-positive on every bundled module ("MISSING: base") since
 # those never live there at all - they ship inside the image itself.
-# Bundled paths are checked FIRST, the two cloned repos (the tenant's own
-# addons_repo_url, then OCA's storage repo - see fs_storage/fs_attachment/
-# fs_attachment_s3 in tasks/_resolve-plan-spec.yml) only as fallbacks for
-# what isn't bundled.
-- name: "Run the addons-path module-existence check [{{ tenant_name }}]"
+# Bundled paths are checked FIRST, the cloned repos (the tenant's own
+# addons_repo_url, then every odoo.oca_repos entry - see fs_storage/
+# fs_attachment/fs_attachment_s3/server_environment in
+# tasks/_resolve-plan-spec.yml) only as fallbacks for what isn't bundled.
+- name: "Run the addons-path module-dependency-closure check [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -23,23 +40,71 @@
     _fileops_name: "check-modules-{{ instance_slug }}-{{ ansible_date_time.iso8601_basic_short | lower }}"
     _fileops_image: "{{ odoo_image_repo }}:{{ version }}.0"
     _fileops_clone_addons: true
-    _fileops_command: >-
-      MISSING="";
-      for m in {{ tenant_spec.init_modules.split(',') | join(' ') }}; do
-        if [ -d "/usr/lib/python3/dist-packages/odoo/addons/$m" ] ||
-           [ -d "/usr/lib/python3/dist-packages/addons/$m" ] ||
-           [ -d "/addons/$m" ] ||
-           [ -d "/oca-addons/$m" ]; then
-          :;
-        else
-          MISSING="$MISSING $m";
-        fi;
-      done;
-      if [ -n "$MISSING" ]; then echo "MISSING:$MISSING"; exit 1; fi;
-      echo OK
+    # `python3 -` (not a `python3 <<'PYEOF'` heredoc) - the script needs no
+    # shell interpolation at all (every dynamic value is rendered by
+    # Ansible's own Jinja templating below, not by the remote shell), and
+    # reading the whole program from stdin avoids a heredoc delimiter
+    # fighting with `-c`'s own quoting. `|-` (literal block, NOT `>-`
+    # folded) is load-bearing here - folding would collapse this script's
+    # newlines into spaces and destroy it; a folded scalar is only safe
+    # for single-line shell, which this stopped being.
+    _fileops_command: |-
+      python3 - <<'PYEOF'
+      import ast
+      import os
+      import sys
+
+      SEARCH_PATHS = [
+          "/usr/lib/python3/dist-packages/odoo/addons",
+          "/usr/lib/python3/dist-packages/addons",
+          "/addons",
+      {% for repo in odoo.oca_repos %}
+          "/oca-{{ repo.name }}",
+      {% endfor %}
+      ]
+      START_MODULES = {{ tenant_spec.init_modules.split(',') | to_json }}
+
+      def find_manifest(mod):
+          for base in SEARCH_PATHS:
+              path = os.path.join(base, mod, "__manifest__.py")
+              if os.path.isfile(path):
+                  return path
+          return None
+
+      visited = set()
+      missing = []
+      queue = [(m, None) for m in START_MODULES]
+      while queue:
+          mod, required_by = queue.pop(0)
+          if mod in visited:
+              continue
+          visited.add(mod)
+          path = find_manifest(mod)
+          if path is None:
+              missing.append((mod, required_by))
+              continue
+          try:
+              with open(path) as f:
+                  manifest = ast.literal_eval(f.read())
+          except Exception as exc:
+              missing.append((mod, "unparsable manifest at %s: %s" % (path, exc)))
+              continue
+          for dep in manifest.get("depends", []):
+              if dep not in visited:
+                  queue.append((dep, mod))
+
+      if missing:
+          for mod, required_by in missing:
+              if required_by:
+                  print("MISSING: %s (required by %s)" % (mod, required_by))
+              else:
+                  print("MISSING: %s (listed in init_modules)" % mod)
+          sys.exit(1)
+      print("OK")
+      PYEOF
   register: _checkmod_job
 
-- name: "Wait for the module-existence check to complete [{{ tenant_name }}]"
+- name: "Wait for the module-dependency-closure check to complete [{{ tenant_name }}]"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
     kind: Job
@@ -53,7 +118,7 @@
   retries: 30
   delay: 3
 
-- name: "Fetch the module-existence check's output [{{ tenant_name }}]"
+- name: "Fetch the module-dependency-closure check's output [{{ tenant_name }}]"
   kubernetes.core.k8s_log:
     kubeconfig: "{{ kubeconfig_path }}"
     namespace: "{{ xayma_namespace }}"
@@ -61,7 +126,7 @@
       - "job-name={{ _checkmod_job.result.metadata.name }}"
   register: _checkmod_logs
 
-- name: "Delete the module-existence check Job [{{ tenant_name }}]"
+- name: "Delete the module-dependency-closure check Job [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: absent
@@ -70,12 +135,15 @@
     namespace: "{{ xayma_namespace }}"
     name: "{{ _checkmod_job.result.metadata.name }}"
 
-- name: "Assert every init_modules entry exists in the addons path [{{ tenant_name }}]"
+- name: "Assert every init_modules entry AND its full dependency closure exists in the addons path [{{ tenant_name }}]"
   ansible.builtin.assert:
     that: "'MISSING' not in (_checkmod_logs.log | default(''))"
     fail_msg: >-
-      One or more init_modules for {{ tenant_name }} (plan={{ plan }}:
-      {{ tenant_spec.init_modules }}) do not exist in odoo.addons_repo_url at
-      odoo.addons_repo_ref - {{ _checkmod_logs.log | default('') }}. Push the
-      module to the addons repo, fix odoo.addons_repo_ref, or check the
-      module name before retrying.
+      One or more modules required to init {{ tenant_name }} (plan={{ plan }}:
+      {{ tenant_spec.init_modules }}, including transitive dependencies) do
+      not exist anywhere on the addons path - {{ _checkmod_logs.log | default('') }}.
+      Each MISSING line names the module and, if it's a transitive
+      dependency rather than a top-level init_modules entry, which
+      manifest actually requires it. Push the missing module to
+      odoo.addons_repo_url, add its upstream repo to odoo.oca_repos, or
+      correct the module name before retrying.
