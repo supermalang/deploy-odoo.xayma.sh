@@ -72,6 +72,26 @@ spec:
         # makes pod start depend on GitHub being reachable and the deploy
         # key still being valid - see README "Architecture" for the
         # custom-image escape hatch if that ever becomes a problem.
+        #
+        # `rm -rf /addons/.git /addons/*` FIRST, every attempt, unconditionally
+        # - an emptyDir volume survives a CONTAINER restart (it is only
+        # cleared when the whole POD is deleted from the node), so without
+        # this, a killed attempt's half-fetched tree is exactly what a
+        # RESTARTED attempt inherits: `git init`/`git remote add origin`
+        # then fail with "remote origin already exists" under `set -eu`
+        # before `git fetch` ever runs again - masking the real error (a
+        # bad ref, a revoked key, a GitHub outage) behind a misleading one
+        # that only ever appears in the FIRST attempt's log, gone the
+        # moment kubelet restarts the container (live incident: AWX job
+        # 118, three pods stuck Init:CrashLoopBackOff on `clone-addons`,
+        # `kubectl logs` showing only "remote origin already exists" on
+        # every later attempt - the real cause, `fatal: couldn't find
+        # remote ref main`, only surfaced by running the clone by hand in
+        # a one-off pod nothing was restarting underneath). Clearing first
+        # guarantees a restarted attempt starts from the same clean slate
+        # as the first one, so its log always shows the real failure, and
+        # a partially-fetched tree left by a killed attempt is never what
+        # a pod ends up actually serving.
         - name: clone-addons
           image: alpine/git:{{ versions.git }}
           command:
@@ -80,6 +100,7 @@ spec:
             - >-
               set -eu;
               export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519";
+              rm -rf /addons/.git /addons/*;
               git init -q /addons;
               cd /addons;
               git remote add origin {{ odoo.addons_repo_url }};
@@ -102,6 +123,7 @@ spec:
             - -c
             - >-
               set -eu;
+              rm -rf /oca-addons/.git /oca-addons/*;
               git init -q /oca-addons;
               cd /oca-addons;
               git remote add origin {{ odoo.oca_storage_repo_url }};
@@ -263,6 +285,7 @@ spec:
             - >-
               set -eu;
               export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519";
+              rm -rf /addons/.git /addons/*;
               git init -q /addons;
               cd /addons;
               git remote add origin {{ odoo.addons_repo_url }};
@@ -285,6 +308,7 @@ spec:
             - -c
             - >-
               set -eu;
+              rm -rf /oca-addons/.git /oca-addons/*;
               git init -q /oca-addons;
               cd /oca-addons;
               git remote add origin {{ odoo.oca_storage_repo_url }};
@@ -431,6 +455,7 @@ spec:
             - >-
               set -eu;
               export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519";
+              rm -rf /addons/.git /addons/*;
               git init -q /addons;
               cd /addons;
               git remote add origin {{ odoo.addons_repo_url }};
@@ -453,6 +478,7 @@ spec:
             - -c
             - >-
               set -eu;
+              rm -rf /oca-addons/.git /oca-addons/*;
               git init -q /oca-addons;
               cd /oca-addons;
               git remote add origin {{ odoo.oca_storage_repo_url }};

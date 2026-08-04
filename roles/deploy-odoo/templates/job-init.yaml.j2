@@ -45,7 +45,11 @@ spec:
       initContainers:
         # No shared PVC - see pool-deployments.yaml.j2's clone-addons for the
         # rationale; this Job needs the same addons content the pool it's
-        # initializing into will run with.
+        # initializing into will run with. The `rm -rf` before `git init`
+        # below matters here too, defensively, even though this Job's
+        # restartPolicy: Never means kubelet never restarts a container
+        # in-place - see pool-deployments.yaml.j2's clone-addons comment
+        # for why a stale /addons must never be what any clone reuses.
         - name: clone-addons
           image: alpine/git:{{ versions.git }}
           command:
@@ -54,6 +58,7 @@ spec:
             - >-
               set -eu;
               export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519";
+              rm -rf /addons/.git /addons/*;
               git init -q /addons;
               cd /addons;
               git remote add origin {{ odoo.addons_repo_url }};
@@ -74,6 +79,7 @@ spec:
             - -c
             - >-
               set -eu;
+              rm -rf /oca-addons/.git /oca-addons/*;
               git init -q /oca-addons;
               cd /oca-addons;
               git remote add origin {{ odoo.oca_storage_repo_url }};
