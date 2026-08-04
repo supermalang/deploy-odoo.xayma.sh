@@ -63,15 +63,16 @@ spec:
         # why a branch name here is bootstrap-only, not the production end
         # state). `git fetch --depth 1 origin <ref>` (not `git clone`)
         # because `git clone --branch` can't take a literal SHA, which
-        # addons_repo_ref/oca_storage_repo_ref both need to support - this
-        # form works identically for either (verified against the real
-        # OCA/storage repo at its pinned SHA on 2026-08-04) and avoids
-        # pulling either repo's full history on every pod start/HPA
-        # scale-up. Auth is the addons-deploy-key Secret (a read-only
-        # GitHub deploy key) - see addons-deploy-key-secret.yaml.j2. This
-        # makes pod start depend on GitHub being reachable and the deploy
-        # key still being valid - see README "Architecture" for the
-        # custom-image escape hatch if that ever becomes a problem.
+        # addons_repo_ref and every odoo.oca_repos[].ref both need to
+        # support - this form works identically for either (verified
+        # against the real OCA/storage repo at its pinned SHA on
+        # 2026-08-04) and avoids pulling either repo's full history on
+        # every pod start/HPA scale-up. Auth is the addons-deploy-key
+        # Secret (a read-only GitHub deploy key) - see
+        # addons-deploy-key-secret.yaml.j2. This makes pod start depend on
+        # GitHub being reachable and the deploy key still being valid -
+        # see README "Architecture" for the custom-image escape hatch if
+        # that ever becomes a problem.
         #
         # `rm -rf /addons/.git /addons/*` FIRST, every attempt, unconditionally
         # - an emptyDir volume survives a CONTAINER restart (it is only
@@ -112,28 +113,32 @@ spec:
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
-        # Separate, independent clone from OCA's PUBLIC storage repo (no
-        # deploy key needed) - fs_storage/fs_attachment/fs_attachment_s3 are
-        # mandatory platform infra (see tasks/_resolve-plan-spec.yml), not
-        # part of the tenant's own custom addons repo above.
-        - name: clone-oca-storage
+        # Separate, independent clones from each PUBLIC repo in
+        # odoo.oca_repos (no deploy key needed) - fs_storage/fs_attachment/
+        # fs_attachment_s3/server_environment are mandatory platform infra
+        # (see tasks/_resolve-plan-spec.yml), not part of the tenant's own
+        # custom addons repo above. One initContainer per list entry -
+        # adding the next OCA dependency there needs no new block here.
+{% for repo in odoo.oca_repos %}
+        - name: clone-oca-{{ repo.name }}
           image: alpine/git:{{ versions.git }}
           command:
             - sh
             - -c
             - >-
               set -eu;
-              rm -rf /oca-addons/.git /oca-addons/*;
-              git init -q /oca-addons;
-              cd /oca-addons;
-              git remote add origin {{ odoo.oca_storage_repo_url }};
-              git fetch --depth 1 origin {{ odoo.oca_storage_repo_ref }};
+              rm -rf /oca-{{ repo.name }}/.git /oca-{{ repo.name }}/*;
+              git init -q /oca-{{ repo.name }};
+              cd /oca-{{ repo.name }};
+              git remote add origin {{ repo.url }};
+              git fetch --depth 1 origin {{ repo.ref }};
               git checkout -q FETCH_HEAD
           volumeMounts:
-            - {name: oca-addons, mountPath: /oca-addons}
+            - {name: "oca-{{ repo.name }}", mountPath: "/oca-{{ repo.name }}"}
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
+{% endfor %}
         - name: render-config
           image: busybox:{{ versions.busybox }}
           command:
@@ -195,7 +200,9 @@ spec:
             - {name: etc-odoo, mountPath: /etc/odoo}
             - {name: filestore, mountPath: /var/lib/odoo}
             - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
-            - {name: oca-addons, mountPath: /opt/oca-addons, readOnly: true}
+{% for repo in odoo.oca_repos %}
+            - {name: "oca-{{ repo.name }}", mountPath: "/opt/oca-{{ repo.name }}", readOnly: true}
+{% endfor %}
           resources:
             requests: {cpu: "{{ pool_spec.pod.cpu_request }}", memory: "{{ pool_spec.pod.mem_request }}"}
             limits: {cpu: "{{ pool_spec.pod.cpu_limit }}", memory: "{{ pool_spec.pod.mem_limit }}"}
@@ -222,7 +229,9 @@ spec:
         # written here needs to survive the pod.
         - {name: filestore, emptyDir: {}}
         - {name: addons, emptyDir: {}}
-        - {name: oca-addons, emptyDir: {}}
+{% for repo in odoo.oca_repos %}
+        - {name: "oca-{{ repo.name }}", emptyDir: {}}
+{% endfor %}
         - name: addons-deploy-key
           secret:
             secretName: "{{ addons_deploy_key_secret_name }}"
@@ -297,28 +306,32 @@ spec:
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
-        # Separate, independent clone from OCA's PUBLIC storage repo (no
-        # deploy key needed) - fs_storage/fs_attachment/fs_attachment_s3 are
-        # mandatory platform infra (see tasks/_resolve-plan-spec.yml), not
-        # part of the tenant's own custom addons repo above.
-        - name: clone-oca-storage
+        # Separate, independent clones from each PUBLIC repo in
+        # odoo.oca_repos (no deploy key needed) - fs_storage/fs_attachment/
+        # fs_attachment_s3/server_environment are mandatory platform infra
+        # (see tasks/_resolve-plan-spec.yml), not part of the tenant's own
+        # custom addons repo above. One initContainer per list entry -
+        # adding the next OCA dependency there needs no new block here.
+{% for repo in odoo.oca_repos %}
+        - name: clone-oca-{{ repo.name }}
           image: alpine/git:{{ versions.git }}
           command:
             - sh
             - -c
             - >-
               set -eu;
-              rm -rf /oca-addons/.git /oca-addons/*;
-              git init -q /oca-addons;
-              cd /oca-addons;
-              git remote add origin {{ odoo.oca_storage_repo_url }};
-              git fetch --depth 1 origin {{ odoo.oca_storage_repo_ref }};
+              rm -rf /oca-{{ repo.name }}/.git /oca-{{ repo.name }}/*;
+              git init -q /oca-{{ repo.name }};
+              cd /oca-{{ repo.name }};
+              git remote add origin {{ repo.url }};
+              git fetch --depth 1 origin {{ repo.ref }};
               git checkout -q FETCH_HEAD
           volumeMounts:
-            - {name: oca-addons, mountPath: /oca-addons}
+            - {name: "oca-{{ repo.name }}", mountPath: "/oca-{{ repo.name }}"}
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
+{% endfor %}
         - name: render-config
           image: busybox:{{ versions.busybox }}
           command:
@@ -380,7 +393,9 @@ spec:
             - {name: etc-odoo, mountPath: /etc/odoo}
             - {name: filestore, mountPath: /var/lib/odoo}
             - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
-            - {name: oca-addons, mountPath: /opt/oca-addons, readOnly: true}
+{% for repo in odoo.oca_repos %}
+            - {name: "oca-{{ repo.name }}", mountPath: "/opt/oca-{{ repo.name }}", readOnly: true}
+{% endfor %}
           resources:
             requests: {cpu: "{{ pool_spec.pod.cpu_request }}", memory: "{{ pool_spec.pod.mem_request }}"}
             limits: {cpu: "{{ pool_spec.pod.cpu_limit }}", memory: "{{ pool_spec.pod.mem_limit }}"}
@@ -402,7 +417,9 @@ spec:
         # written here needs to survive the pod.
         - {name: filestore, emptyDir: {}}
         - {name: addons, emptyDir: {}}
-        - {name: oca-addons, emptyDir: {}}
+{% for repo in odoo.oca_repos %}
+        - {name: "oca-{{ repo.name }}", emptyDir: {}}
+{% endfor %}
         - name: addons-deploy-key
           secret:
             secretName: "{{ addons_deploy_key_secret_name }}"
@@ -467,28 +484,32 @@ spec:
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
-        # Separate, independent clone from OCA's PUBLIC storage repo (no
-        # deploy key needed) - fs_storage/fs_attachment/fs_attachment_s3 are
-        # mandatory platform infra (see tasks/_resolve-plan-spec.yml), not
-        # part of the tenant's own custom addons repo above.
-        - name: clone-oca-storage
+        # Separate, independent clones from each PUBLIC repo in
+        # odoo.oca_repos (no deploy key needed) - fs_storage/fs_attachment/
+        # fs_attachment_s3/server_environment are mandatory platform infra
+        # (see tasks/_resolve-plan-spec.yml), not part of the tenant's own
+        # custom addons repo above. One initContainer per list entry -
+        # adding the next OCA dependency there needs no new block here.
+{% for repo in odoo.oca_repos %}
+        - name: clone-oca-{{ repo.name }}
           image: alpine/git:{{ versions.git }}
           command:
             - sh
             - -c
             - >-
               set -eu;
-              rm -rf /oca-addons/.git /oca-addons/*;
-              git init -q /oca-addons;
-              cd /oca-addons;
-              git remote add origin {{ odoo.oca_storage_repo_url }};
-              git fetch --depth 1 origin {{ odoo.oca_storage_repo_ref }};
+              rm -rf /oca-{{ repo.name }}/.git /oca-{{ repo.name }}/*;
+              git init -q /oca-{{ repo.name }};
+              cd /oca-{{ repo.name }};
+              git remote add origin {{ repo.url }};
+              git fetch --depth 1 origin {{ repo.ref }};
               git checkout -q FETCH_HEAD
           volumeMounts:
-            - {name: oca-addons, mountPath: /oca-addons}
+            - {name: "oca-{{ repo.name }}", mountPath: "/oca-{{ repo.name }}"}
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
+{% endfor %}
         - name: render-config
           image: busybox:{{ versions.busybox }}
           command:
@@ -559,7 +580,9 @@ spec:
             - {name: etc-odoo, mountPath: /etc/odoo}
             - {name: filestore, mountPath: /var/lib/odoo}
             - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
-            - {name: oca-addons, mountPath: /opt/oca-addons, readOnly: true}
+{% for repo in odoo.oca_repos %}
+            - {name: "oca-{{ repo.name }}", mountPath: "/opt/oca-{{ repo.name }}", readOnly: true}
+{% endfor %}
           resources:
             requests: {cpu: "{{ pool_spec.pod.cpu_request }}", memory: "{{ pool_spec.pod.mem_request }}"}
             limits: {cpu: "{{ pool_spec.pod.cpu_limit }}", memory: "{{ pool_spec.pod.mem_limit }}"}
@@ -581,7 +604,9 @@ spec:
         # written here needs to survive the pod.
         - {name: filestore, emptyDir: {}}
         - {name: addons, emptyDir: {}}
-        - {name: oca-addons, emptyDir: {}}
+{% for repo in odoo.oca_repos %}
+        - {name: "oca-{{ repo.name }}", emptyDir: {}}
+{% endfor %}
         - name: addons-deploy-key
           secret:
             secretName: "{{ addons_deploy_key_secret_name }}"

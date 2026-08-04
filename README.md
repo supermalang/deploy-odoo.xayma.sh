@@ -72,9 +72,12 @@ Configuration
    `odoo.addons_repo_ref`, every module any tenant's `init_modules` needs
    beyond Odoo's own bundled modules — including `session_redis` itself,
    which is mandatory. `_assert-init-modules.yml` fails fast on a missing
-   module rather than deep inside a batch-low Job. (`fs_storage`/
-   `fs_attachment`/`fs_attachment_s3` come from OCA's own public repo
-   automatically — nothing to push for those.)
+   module **or a missing transitive dependency of one** (walks every
+   module's `depends` across the whole addons path, not just the modules
+   `init_modules` lists by name) rather than deep inside a batch-low Job.
+   (`fs_storage`/`fs_attachment`/`fs_attachment_s3`/`server_environment`
+   come from `odoo.oca_repos`'s public repos automatically — nothing to
+   push for those; see "Architecture".)
 
    **This is a prerequisite of the first `deploy`, not something this role
    can create — a brand-new, empty repo does not satisfy it.** Concretely,
@@ -138,18 +141,22 @@ Architecture
     pooling). Handles `/websocket/*` only.
 - **No PVCs anywhere in the pool.** Community/custom addons are cloned
   fresh into an `emptyDir` by a `clone-addons` initContainer on every pod/
-  Job (auth: the `addons-deploy-key` Secret); OCA's `fs_storage`/
-  `fs_attachment`/`fs_attachment_s3` come from a second, public
-  `clone-oca-storage` initContainer, pinned to a commit SHA
-  (`odoo.oca_storage_repo_ref`). `ir.attachment` storage itself goes
-  straight to the platform MinIO's `odoo-filestore` bucket, one prefix per
-  tenant database, via one `fs.storage` record `job-fixup.yaml.j2` upserts
-  idempotently. This statelessness is what makes the hard node-affinity
-  gate in "Configuration" safe — there's no local data to strand.
-- **Both clones are a shallow `git fetch --depth 1` of exactly the pinned
+  Job (auth: the `addons-deploy-key` Secret). Every public OCA dependency —
+  `odoo.oca_repos` (`defaults/main/01-deploy-odoo-defaults.yml`): currently
+  `fs_storage`/`fs_attachment`/`fs_attachment_s3` (OCA/storage) and
+  `server_environment` (OCA/server-env, a `fs_storage` dependency) — gets
+  its own `clone-oca-{name}` initContainer, looped from that one list; the
+  next OCA dependency is one list entry, not a new template block in five
+  places. `ir.attachment` storage itself goes straight to the platform
+  MinIO's `odoo-filestore` bucket, one prefix per tenant database, via one
+  `fs.storage` record `job-fixup.yaml.j2` upserts idempotently. This
+  statelessness is what makes the hard node-affinity gate in
+  "Configuration" safe — there's no local data to strand.
+- **Every clone is a shallow `git fetch --depth 1` of exactly the pinned
   ref** (works for a branch name or a literal SHA — `git clone --branch`
-  can't take a SHA, so this form is used for both instead of two
-  different code paths), not a full clone — cheap on every pod start/HPA
+  can't take a SHA, so this one form covers the private repo and every OCA
+  one instead of different code paths per source), not a full clone — cheap
+  on every pod start/HPA
   scale-up, but it does mean **pod start now depends on GitHub being
   reachable and the deploy key still being valid**: a GitHub outage, a
   rate-limit, or a revoked key means no new pool pod can start anywhere in
@@ -591,9 +598,9 @@ explicitly), Postgres `16.6-bookworm`, PgBouncer `1.23.1-p2`
 (`edoburu/pgbouncer`), Redis `7.4.1-alpine3.20`, postgres-exporter
 `v0.16.0`, `busybox` (suspend-backend + initContainer config merges),
 `rclone` (backup/restore/purge-filestore Jobs), `git` (`clone-addons`/
-`clone-oca-storage` initContainers). Never `latest`.
-`odoo.oca_storage_repo_ref` is pinned the same way but lives under
-`odoo:`, since it's a commit SHA, not a container tag.
+every `clone-oca-{name}` initContainer). Never `latest`.
+Each `odoo.oca_repos[].ref` is pinned the same way but lives under `odoo:`,
+since they're commit SHAs, not container tags.
 
 Vault
 -----

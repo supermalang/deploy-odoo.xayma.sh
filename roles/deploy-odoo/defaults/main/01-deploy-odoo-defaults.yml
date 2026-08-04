@@ -169,18 +169,53 @@ odoo:
   # first-connect TOFU accept (which would be a MITM opportunity).
   addons_repo_known_hosts: "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
-  # fs_storage/fs_attachment/fs_attachment_s3 (mandatory - see
-  # tasks/_resolve-plan-spec.yml - every tenant's S3 filestore backend) come
-  # from OCA's own public storage repo, cloned by a SECOND, independent
-  # `clone-oca-storage` initContainer (plain HTTPS, no deploy key needed -
-  # the repo is public) into a second addons_path entry. Pinned to a literal
-  # SHA, not a branch, from day one (unlike addons_repo_ref above) - this is
-  # the production pattern that one is still bootstrapping toward: verified
-  # live via `git ls-remote https://github.com/OCA/storage.git
-  # refs/heads/19.0` on 2026-08-04. Bump deliberately; never point this at a
-  # floating branch.
-  oca_storage_repo_url: "https://github.com/OCA/storage.git"
-  oca_storage_repo_ref: "af1a3beeb324082e457bb168d20d13704f5df323"
+  # Public OCA repos this pool needs, as DATA - looped over by
+  # pool-deployments.yaml.j2/job-init.yaml.j2/job-fixup.yaml.j2/
+  # job-fileops.yaml.j2 (one clone-oca-{{ name }} initContainer + one
+  # emptyDir per entry) and by pool-configmap.yaml.j2 (addons_path) and
+  # _assert-init-modules.yml (module search paths). Adding the next OCA
+  # dependency is ONE entry here, not fifteen edited template blocks - see
+  # git history for the incident (fs_storage depending on server_environment,
+  # a module this list didn't carry yet) that this structure exists to make
+  # cheap to fix. Auth: none - all public HTTPS, no deploy key, unlike
+  # addons_repo_url above (the tenant's own PRIVATE repo, kept separate on
+  # purpose - only that one needs the key). Every ref here is a literal
+  # commit SHA, never a floating branch, from day one - unlike
+  # addons_repo_ref above, which is still bootstrapping toward that.
+  #   name - used to derive both the staging path (/oca-{{ name }}, where
+  #          the clone initContainer checks it out) and the addons_path
+  #          entry (/opt/oca-{{ name }}, where the odoo/init/fixup
+  #          container mounts the same volume read-only).
+  #   url/ref - passed straight to `git remote add origin`/
+  #             `git fetch --depth 1 origin <ref>` (see pool-deployments.yaml.j2's
+  #             clone-addons comment for why fetch-by-ref, not clone).
+  oca_repos:
+    # fs_storage/fs_attachment/fs_attachment_s3 (mandatory - see
+    # tasks/_resolve-plan-spec.yml - every tenant's S3 filestore backend).
+    # Verified live via `git ls-remote https://github.com/OCA/storage.git
+    # refs/heads/19.0` on 2026-08-04.
+    - name: storage
+      url: "https://github.com/OCA/storage.git"
+      ref: "af1a3beeb324082e457bb168d20d13704f5df323"
+    # server_environment (mandatory - fs_storage DEPENDS on it, per its own
+    # __manifest__.py: depends: ["base", "base_sparse_field",
+    # "server_environment"] - base_sparse_field is stock Odoo, this is not.
+    # Missing from this list originally; the gap surfaced live as
+    # `UserError` inside the init Job - "fs_storage" depends on module
+    # "server_environment" ... not available - two minutes and a batch Job
+    # deep, not caught by _assert-init-modules.yml, which only checked that
+    # LISTED modules existed, never their manifests' own `depends`. See
+    # _assert-init-modules.yml for the transitive check added to close that
+    # gap for good, not just for this one module. Verified via `git
+    # ls-remote https://github.com/OCA/server-env.git refs/heads/19.0` on
+    # 2026-08-04; server_environment's own depends (base + base_sparse_field,
+    # both stock) terminates the chain here, and it needs no configuration -
+    # server_env.py defaults `running_env` to "test" when unset, and only
+    # raises if a server_environment_files addon is ALSO installed, which
+    # this platform does not install.
+    - name: server-env
+      url: "https://github.com/OCA/server-env.git"
+      ref: "fe6a410ffd1e37ead2b4419c1a2c98bfb5a12d90"
 
   # Integrity guards for odoo_action=backup (templates/job-backup.yaml.j2) -
   # `sh` is dash, which has no `pipefail`, so `pg_dump | gzip > file` used to

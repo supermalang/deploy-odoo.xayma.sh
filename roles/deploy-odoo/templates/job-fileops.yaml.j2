@@ -9,11 +9,12 @@
 # odoo image so its check can see Odoo's own bundled addons paths too, not
 # just the freshly cloned repos this Job otherwise only needs;
 # `_fileops_clone_addons` (default false) - set true to get `/addons` and
-# `/oca-addons` directories populated by the same clone-addons/
-# clone-oca-storage initContainers pool-deployments.yaml.j2 uses (the
-# `rm -rf` before `git init` in both - see that template's clone-addons
-# comment for why - applies here too, defensively, even though this Job's
-# restartPolicy: Never means kubelet never restarts a container in-place).
+# one `/oca-{{ '{name}' }}` directory per odoo.oca_repos entry populated by
+# the same clone-addons/clone-oca-* initContainers pool-deployments.yaml.j2
+# uses (the `rm -rf` before `git init` in each - see that template's
+# clone-addons comment for why - applies here too, defensively, even
+# though this Job's restartPolicy: Never means kubelet never restarts a
+# container in-place).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -52,24 +53,26 @@ spec:
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
-        - name: clone-oca-storage
+{% for repo in odoo.oca_repos %}
+        - name: clone-oca-{{ repo.name }}
           image: alpine/git:{{ versions.git }}
           command:
             - sh
             - -c
             - >-
               set -eu;
-              rm -rf /oca-addons/.git /oca-addons/*;
-              git init -q /oca-addons;
-              cd /oca-addons;
-              git remote add origin {{ odoo.oca_storage_repo_url }};
-              git fetch --depth 1 origin {{ odoo.oca_storage_repo_ref }};
+              rm -rf /oca-{{ repo.name }}/.git /oca-{{ repo.name }}/*;
+              git init -q /oca-{{ repo.name }};
+              cd /oca-{{ repo.name }};
+              git remote add origin {{ repo.url }};
+              git fetch --depth 1 origin {{ repo.ref }};
               git checkout -q FETCH_HEAD
           volumeMounts:
-            - {name: oca-addons, mountPath: /oca-addons}
+            - {name: "oca-{{ repo.name }}", mountPath: "/oca-{{ repo.name }}"}
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
+{% endfor %}
 {% endif %}
       containers:
         - name: fileops
@@ -78,7 +81,9 @@ spec:
 {% if _fileops_clone_addons | default(false) %}
           volumeMounts:
             - {name: addons, mountPath: /addons}
-            - {name: oca-addons, mountPath: /oca-addons}
+{% for repo in odoo.oca_repos %}
+            - {name: "oca-{{ repo.name }}", mountPath: "/oca-{{ repo.name }}"}
+{% endfor %}
 {% endif %}
           resources:
             requests: {cpu: 50m, memory: 64Mi}
@@ -86,7 +91,9 @@ spec:
 {% if _fileops_clone_addons | default(false) %}
       volumes:
         - {name: addons, emptyDir: {}}
-        - {name: oca-addons, emptyDir: {}}
+{% for repo in odoo.oca_repos %}
+        - {name: "oca-{{ repo.name }}", emptyDir: {}}
+{% endfor %}
         - name: addons-deploy-key
           secret:
             secretName: "{{ addons_deploy_key_secret_name }}"

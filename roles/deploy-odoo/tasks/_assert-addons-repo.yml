@@ -2,12 +2,18 @@
 # include_tasks helper (only when a NEW pool is about to be built, or
 # apply-plan is forcing a reapply - see _resolve-pool.yml's `_pool_apply_spec`
 # gate on the caller) - fails fast, before any pool pod that would depend on
-# odoo.addons_repo_url/odoo.addons_repo_ref actually working exists at all.
-# Same instinct as _assert-init-modules.yml ("fail fast rather than deep
-# inside a batch-low Job"), applied one level earlier: that check verifies a
-# TENANT's init_modules exist in an addons repo assumed to be usable at all;
-# this one verifies the repo/ref backing every pool pod's clone-addons
-# initContainer resolves and is usable in the first place.
+# odoo.addons_repo_url/odoo.addons_repo_ref or any odoo.oca_repos entry
+# actually working exists at all. Same instinct as _assert-init-modules.yml
+# ("fail fast rather than deep inside a batch-low Job"), applied one level
+# earlier: that check verifies a TENANT's init_modules (and their full
+# dependency closure) exist in an addons path assumed to be usable at all;
+# this one verifies every repo/ref backing that addons path - the tenant's
+# private repo AND every public OCA repo - resolves and is usable in the
+# first place. `_fileops_clone_addons: true` below clones ALL of them
+# (private + every odoo.oca_repos entry) via job-fileops.yaml.j2's own
+# loop, so this preflight covers every entry in that list automatically -
+# nothing here needs to enumerate them itself except when naming which one
+# failed (see the log-fetch loop and fail_msg below).
 #
 # Runs IN-CLUSTER (a Job, in the pattern of job-fileops.yaml.j2/
 # _assert-init-modules.yml), not as a control-node `git`/`command` task -
@@ -58,9 +64,13 @@
   retries: 30
   delay: 3
 
-# Whichever container actually failed - clone-addons (the ref doesn't
-# resolve in odoo.addons_repo_url) or fileops (it resolves but the tree
-# lacks session_redis) - fetch both; exactly one will have real content.
+# Whichever container actually failed - clone-addons (odoo.addons_repo_ref
+# doesn't resolve), one of the clone-oca-* containers (one odoo.oca_repos
+# entry's ref doesn't resolve), or fileops (everything resolved but the
+# tenant repo's tree lacks session_redis) - fetch all of them; exactly one
+# will have real content. Looping over odoo.oca_repos here (not one
+# hardcoded clone-oca-storage fetch) is what keeps this preflight actually
+# useful once it clones more than one OCA repo - see 01-deploy-odoo-defaults.yml.
 - name: "Fetch the clone-addons container's log on failure [{{ pool_id }}]"
   kubernetes.core.k8s_log:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -71,6 +81,20 @@
   register: _addonscheck_clone_logs
   failed_when: false
   when: _addonscheck_status.resources[0].status.failed | default(0) | int > 0
+
+- name: "Fetch each clone-oca-*'s log on failure [{{ pool_id }}]"
+  kubernetes.core.k8s_log:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "job-name={{ _addonscheck_job.result.metadata.name }}"
+    container: "clone-oca-{{ item.name }}"
+  register: _addonscheck_oca_logs
+  failed_when: false
+  when: _addonscheck_status.resources[0].status.failed | default(0) | int > 0
+  loop: "{{ odoo.oca_repos }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 - name: "Fetch the fileops container's log on failure [{{ pool_id }}]"
   kubernetes.core.k8s_log:
@@ -96,13 +120,18 @@
   ansible.builtin.assert:
     that: _addonscheck_status.resources[0].status.succeeded | default(0) | int > 0
     fail_msg: >-
-      odoo.addons_repo_url ({{ odoo.addons_repo_url }}) at
-      odoo.addons_repo_ref ({{ odoo.addons_repo_ref }}) is not usable to
-      build pool {{ pool_id }} - either that ref does not resolve in that
-      repo (push a commit to it, or correct odoo.addons_repo_ref to one
-      that exists), or the tree at that ref is missing session_redis
-      (vendor it from camptocamp/odoo-cloud-platform's 19.0 branch - the
-      same source 01-deploy-odoo-defaults.yml cites for Redis session
-      config - or push it to this repo directly). clone-addons log:
-      {{ _addonscheck_clone_logs.log | default('(no logs captured)') }}
-      fileops log: {{ _addonscheck_fileops_logs.log | default('(no logs captured)') }}
+      Pool {{ pool_id }} cannot be built from its current addons sources.
+      Either odoo.addons_repo_url ({{ odoo.addons_repo_url }}) does not
+      resolve at odoo.addons_repo_ref ({{ odoo.addons_repo_ref }}) - push a
+      commit to it, or correct odoo.addons_repo_ref - or that tree is
+      missing session_redis (vendor it from
+      camptocamp/odoo-cloud-platform's 19.0 branch, the same source
+      01-deploy-odoo-defaults.yml cites for Redis session config, or push
+      it to this repo directly) - or one of odoo.oca_repos does not
+      resolve at its pinned ref: {% for repo in odoo.oca_repos %}{{ repo.name }} ({{ repo.url }} @ {{ repo.ref }}){{ ', ' if not loop.last else '' }}{% endfor %}
+      - bump that entry's ref in 01-deploy-odoo-defaults.yml. clone-addons
+      log: {{ _addonscheck_clone_logs.log | default('(no logs captured)') }}
+      {% for r in _addonscheck_oca_logs.results | default([]) %}clone-oca-{{ r.item.name }}
+      log: {{ r.log | default('(no logs captured)') }}
+      {% endfor %}fileops log:
+      {{ _addonscheck_fileops_logs.log | default('(no logs captured)') }}

@@ -63,26 +63,28 @@ spec:
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
-        # Separate, independent clone from OCA's PUBLIC storage repo - see
-        # pool-deployments.yaml.j2's identical clone-oca-storage.
-        - name: clone-oca-storage
+        # Separate, independent clones from each PUBLIC repo in
+        # odoo.oca_repos - see pool-deployments.yaml.j2's identical loop.
+{% for repo in odoo.oca_repos %}
+        - name: clone-oca-{{ repo.name }}
           image: alpine/git:{{ versions.git }}
           command:
             - sh
             - -c
             - >-
               set -eu;
-              rm -rf /oca-addons/.git /oca-addons/*;
-              git init -q /oca-addons;
-              cd /oca-addons;
-              git remote add origin {{ odoo.oca_storage_repo_url }};
-              git fetch --depth 1 origin {{ odoo.oca_storage_repo_ref }};
+              rm -rf /oca-{{ repo.name }}/.git /oca-{{ repo.name }}/*;
+              git init -q /oca-{{ repo.name }};
+              cd /oca-{{ repo.name }};
+              git remote add origin {{ repo.url }};
+              git fetch --depth 1 origin {{ repo.ref }};
               git checkout -q FETCH_HEAD
           volumeMounts:
-            - {name: oca-addons, mountPath: /oca-addons}
+            - {name: "oca-{{ repo.name }}", mountPath: "/oca-{{ repo.name }}"}
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 250m, memory: 256Mi}
+{% endfor %}
         - name: render-config
           image: busybox:{{ versions.busybox }}
           command:
@@ -167,7 +169,9 @@ spec:
             - {name: etc-odoo, mountPath: /etc/odoo}
             - {name: filestore, mountPath: /var/lib/odoo}
             - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
-            - {name: oca-addons, mountPath: /opt/oca-addons, readOnly: true}
+{% for repo in odoo.oca_repos %}
+            - {name: "oca-{{ repo.name }}", mountPath: "/opt/oca-{{ repo.name }}", readOnly: true}
+{% endfor %}
             - {name: fs-storage-scripts, mountPath: /scripts, readOnly: true}
           resources:
             requests: {cpu: 250m, memory: 512Mi}
@@ -177,7 +181,9 @@ spec:
         - {name: etc-odoo, emptyDir: {}}
         - {name: filestore, emptyDir: {}}
         - {name: addons, emptyDir: {}}
-        - {name: oca-addons, emptyDir: {}}
+{% for repo in odoo.oca_repos %}
+        - {name: "oca-{{ repo.name }}", emptyDir: {}}
+{% endfor %}
         - {name: fs-storage-scripts, configMap: {name: "{{ fs_storage_scripts_configmap_name }}"}}
         - name: addons-deploy-key
           secret:
