@@ -88,3 +88,69 @@
       {{ _restore_job_logs.log | default('(no logs captured)') }}
       CONNECT has been GRANTed back regardless; verify data before
       directing traffic to it if the restore did not complete cleanly.
+
+# Re-run fixup so this restore is self-healing with respect to filestore
+# wiring, not just DB rows - a restored dump carries whatever fs.storage
+# record (or none at all) existed at snapshot time, which is either
+# missing entirely (a pre-0f5ca8b snapshot, back when attachments lived on
+# a PVC that no longer persists) or stale (a valid record, but pointing at
+# a filestore credential that's since been rotated). job-fixup.yaml.j2's
+# fs.storage upsert (see fs_storage_upsert.py.j2) always re-writes it to
+# the CURRENT odoo.filestore_*/vault_odoo_filestore_secret_key, so every
+# restore ends with working filestore wiring regardless of how old the
+# dump is - same idempotent Job odoo_action=deploy runs on every call.
+#
+# job-fixup.yaml.j2 renders pool_config_name/pool_secret_name, which are
+# BOTH derived from the plain `version`/`plan` vars (vars/main.yml's
+# pool_id), not from tenant_version/tenant_plan - and restore, unlike
+# deploy, never receives version/plan as extra_vars (see README "Actions"),
+# so those plain vars would otherwise still be whatever the role defaults
+# say (xayma_odoo.version/plan), silently rendering the WRONG pool's
+# ConfigMap/Secret if this tenant isn't on that default pool. Overriding
+# them from _recover-tenant.yml's already-recovered tenant_version/
+# tenant_plan is what makes this resolve to the tenant's ACTUAL pool.
+- name: "Recover version/plan as plain vars for job-fixup.yaml.j2's pool_config_name/pool_secret_name [{{ tenant_name }}]"
+  ansible.builtin.set_fact:
+    version: "{{ tenant_version }}"
+    plan: "{{ tenant_plan }}"
+
+- name: "Apply the fixup Job [{{ tenant_name }}]"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: job-fixup.yaml.j2
+  register: _restore_fixup_job
+
+- name: "Wait for the fixup Job to complete [{{ tenant_name }}]"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Job
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ _restore_fixup_job.result.metadata.name }}"
+  register: _restore_fixup_status
+  until: >-
+    _restore_fixup_status.resources | length > 0 and
+    (_restore_fixup_status.resources[0].status.succeeded | default(0) | int > 0 or
+     _restore_fixup_status.resources[0].status.failed | default(0) | int > 0)
+  retries: 30
+  delay: 5
+
+- name: "Surface the fixup Job's pod logs on failure [{{ tenant_name }}]"
+  kubernetes.core.k8s_log:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ xayma_namespace }}"
+    label_selectors:
+      - "job-name={{ _restore_fixup_job.result.metadata.name }}"
+  register: _restore_fixup_logs
+  when: _restore_fixup_status.resources[0].status.failed | default(0) | int > 0
+
+- name: "Assert the fixup Job succeeded [{{ tenant_name }}]"
+  ansible.builtin.assert:
+    that: _restore_fixup_status.resources[0].status.succeeded | default(0) | int > 0
+    fail_msg: >-
+      {{ _restore_fixup_job.result.metadata.name }} failed - pod logs:
+      {{ _restore_fixup_logs.log | default('(no logs captured)') }}
+      The restore itself succeeded and CONNECT is GRANTed; only filestore
+      re-wiring failed. Re-run odoo_action=deploy for this tenant to retry
+      fixup alone before assuming the restored data itself is bad.

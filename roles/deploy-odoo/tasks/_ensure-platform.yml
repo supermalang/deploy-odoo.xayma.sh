@@ -197,6 +197,29 @@
     template: filestore-secret.yaml.j2
   no_log: true
 
+# One shared ConfigMap for the fs.storage upsert + force_storage scripts
+# job-init.yaml.j2/job-fixup.yaml.j2 both feed to `odoo shell` via stdin -
+# see fs_storage_upsert.py.j2's header comment for why a shared script,
+# not a copy in each template. `template` (not `file`) lookup for the
+# upsert script specifically because it needs odoo.filestore_* rendered
+# into it; force_storage.py needs no substitution at all, so it's a plain
+# `file` lookup, same technique as the suspend-backend HTML ConfigMap
+# above.
+- name: Apply the fs.storage upsert/force_storage scripts ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ fs_storage_scripts_configmap_name }}"
+        namespace: "{{ xayma_namespace }}"
+        labels: "{{ platform_base_labels | combine({'app.kubernetes.io/name': 'odoo'}) }}"
+      data:
+        fs_storage_upsert.py: "{{ lookup('template', role_path + '/templates/fs_storage_upsert.py.j2') }}"
+        force_storage.py: "{{ lookup('file', role_path + '/files/force_storage.py') }}"
+
 # Shared, namespace-wide suspend/stop/error backend (was per-customer in the
 # slice model - one namespace now, so one backend). The ConfigMap's data
 # comes from files/*.html via the `file` lookup (Jinja's template-include

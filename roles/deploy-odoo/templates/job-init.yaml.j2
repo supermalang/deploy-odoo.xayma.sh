@@ -4,6 +4,25 @@
 # a failed odoo_action=deploy reapplies the SAME Job name, so a still-
 # running init can never be duplicated. NEVER re-runs against an already-
 # initialized database - see deploy-tenant.yml's idempotency guard.
+#
+# Phased (NOT a single `-i` call) so the local filestore this pod's
+# emptyDir provides is still present when we migrate off it - see README
+# "Architecture"/"Known caveats":
+#   1. Install base+fs_storage+fs_attachment+fs_attachment_s3 ONLY. Nothing
+#      else has run yet, so nothing tenant-specific has had a chance to
+#      write an attachment anywhere.
+#   2. fs_storage_upsert.py (shared with job-fixup.yaml.j2 - see
+#      fs_storage_scripts_configmap_name) makes the S3 fs.storage the
+#      default BEFORE any other module installs, so every attachment any
+#      later module creates lands in S3/DB from birth, never on this pod's
+#      filesystem.
+#   3. Install the tenant's real init_modules (fs_storage/fs_attachment/
+#      fs_attachment_s3/base are already installed - `-i` no-ops on them).
+#   4. force_storage.py sweeps anything phase 1 wrote locally (e.g.
+#      fs_attachment's OWN install-time icons, the one documented gotcha -
+#      see fs_storage_upsert.py.j2) onto the now-default fs.storage, while
+#      this pod's emptyDir still has those files. Skipping this step is
+#      exactly the dangling-attachment bug this phasing exists to close.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -11,7 +30,10 @@ metadata:
   namespace: {{ xayma_namespace }}
   labels: {{ tenant_labels | combine({'xayma.sh/job-role': 'init'}) | to_json }}
 spec:
-  activeDeadlineSeconds: 900
+  # 1800s (was 900s for one `-i` call) - this Job now runs two full module
+  # installs plus two `odoo shell` invocations in sequence; a tenant with a
+  # large init_modules list needs the extra headroom.
+  activeDeadlineSeconds: 1800
   backoffLimit: 0
   ttlSecondsAfterFinished: 3600
   template:
@@ -92,22 +114,32 @@ spec:
           # invoked (ODOO_SESSION_REDIS is intentionally left unset here -
           # see pool-deployments.yaml.j2 for where it's actually needed).
           image: "{{ odoo_image_repo }}:{{ version }}.0"
-          command: ["odoo"]
+          command: ["/bin/bash", "-c"]
           args:
-            - -c
-            - /etc/odoo/odoo.conf
-            - -d
-            - "{{ instance_slug }}"
-            - -i
-            - "{{ tenant_spec.init_modules }}"
-            - --without-demo=all
-            - --stop-after-init
-            - --no-http
+            - |
+              set -euo pipefail
+              odoo -c /etc/odoo/odoo.conf -d {{ instance_slug }} \
+                -i base,fs_storage,fs_attachment,fs_attachment_s3 \
+                --without-demo=all --stop-after-init --no-http
+              odoo shell -c /etc/odoo/odoo.conf -d {{ instance_slug }} --no-http \
+                < /scripts/fs_storage_upsert.py
+              odoo -c /etc/odoo/odoo.conf -d {{ instance_slug }} \
+                -i "{{ tenant_spec.init_modules }}" \
+                --without-demo=all --stop-after-init --no-http
+              odoo shell -c /etc/odoo/odoo.conf -d {{ instance_slug }} --no-http \
+                < /scripts/force_storage.py
+          env:
+            - name: FILESTORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ filestore_secret_name }}"
+                  key: FILESTORE_SECRET_KEY
           volumeMounts:
             - {name: etc-odoo, mountPath: /etc/odoo}
             - {name: filestore, mountPath: /var/lib/odoo}
             - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
             - {name: oca-addons, mountPath: /opt/oca-addons, readOnly: true}
+            - {name: fs-storage-scripts, mountPath: /scripts, readOnly: true}
           resources:
             requests: {cpu: 500m, memory: 1Gi}
             limits: {cpu: "1", memory: 2Gi}
@@ -117,6 +149,7 @@ spec:
         - {name: filestore, emptyDir: {}}
         - {name: addons, emptyDir: {}}
         - {name: oca-addons, emptyDir: {}}
+        - {name: fs-storage-scripts, configMap: {name: "{{ fs_storage_scripts_configmap_name }}"}}
         - name: addons-deploy-key
           secret:
             secretName: "{{ addons_deploy_key_secret_name }}"

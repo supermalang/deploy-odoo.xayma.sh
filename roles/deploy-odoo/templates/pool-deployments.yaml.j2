@@ -145,6 +145,15 @@ spec:
             - name: ODOO_SESSION_REDIS_PASSWORD
               valueFrom:
                 secretKeyRef: {name: "{{ redis_secret_name }}", key: REDIS_PASSWORD}
+            # fs_storage.eval_options_from_env (see fs_storage_upsert.py.j2)
+            # resolves this at the moment any attachment is actually
+            # touched - needed on every pod that can serve a request, not
+            # just the init/fixup Jobs that create the fs.storage record.
+            - name: FILESTORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ filestore_secret_name }}"
+                  key: FILESTORE_SECRET_KEY
           ports:
             - {name: http, containerPort: 8069}
           volumeMounts:
@@ -315,6 +324,15 @@ spec:
             - name: ODOO_SESSION_REDIS_PASSWORD
               valueFrom:
                 secretKeyRef: {name: "{{ redis_secret_name }}", key: REDIS_PASSWORD}
+            # fs_storage.eval_options_from_env (see fs_storage_upsert.py.j2)
+            # resolves this at the moment any attachment is actually
+            # touched - needed on every pod that can serve a request, not
+            # just the init/fixup Jobs that create the fs.storage record.
+            - name: FILESTORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ filestore_secret_name }}"
+                  key: FILESTORE_SECRET_KEY
           ports:
             - {name: http, containerPort: 8069}
           volumeMounts:
@@ -479,6 +497,15 @@ spec:
             - name: ODOO_SESSION_REDIS_PASSWORD
               valueFrom:
                 secretKeyRef: {name: "{{ redis_secret_name }}", key: REDIS_PASSWORD}
+            # fs_storage.eval_options_from_env (see fs_storage_upsert.py.j2)
+            # resolves this at the moment any attachment is actually
+            # touched - needed on every pod that can serve a request, not
+            # just the init/fixup Jobs that create the fs.storage record.
+            - name: FILESTORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ filestore_secret_name }}"
+                  key: FILESTORE_SECRET_KEY
           ports:
             - {name: longpolling, containerPort: 8072}
           volumeMounts:

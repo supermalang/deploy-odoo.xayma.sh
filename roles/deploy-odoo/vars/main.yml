@@ -81,6 +81,11 @@ redis_secret_name: redis-auth
 minio_secret_name: minio-credentials
 addons_deploy_key_secret_name: addons-deploy-key
 filestore_secret_name: filestore-credentials
+# Shared fs.storage upsert + force_storage Python, mounted read-only by
+# job-init.yaml.j2/job-fixup.yaml.j2 so both feed `odoo shell` the exact
+# same script instead of carrying independent copies that can drift - see
+# tasks/_ensure-platform.yml.
+fs_storage_scripts_configmap_name: fs-storage-scripts
 pgadmin_ro_role: pgadmin_ro
 backup_ro_role: backup_ro
 pgbouncer_auth_role: pgbouncer_auth

@@ -1,0 +1,51 @@
+{#- Shared fs.storage upsert, rendered ONCE into the fs-storage-scripts
+   ConfigMap (see tasks/_ensure-platform.yml) - job-init.yaml.j2 and
+   job-fixup.yaml.j2 both feed this to `odoo shell` via stdin instead of
+   each carrying their own copy, so the two Jobs cannot drift out of sync
+   on how this record is built. Only odoo.filestore_* (platform-wide, not
+   tenant-specific) are templated here - db_name below is a literal
+   fs_storage placeholder Jinja never touches. #}
+import json
+
+# fs_storage.eval_options_from_env (OCA/storage fs_storage.py:144, resolved
+# at fs_storage.py:661's _eval_options_from_env) resolves any option value
+# starting with "$" from os.getenv(value[1:]) at filesystem-instantiation
+# time, not at record-write time - so "$FILESTORE_SECRET_KEY" below is
+# written to fs_storage.options LITERALLY (22 characters, never the real
+# secret) and only ever resolves inside whichever process is actually
+# about to touch S3 (which carries FILESTORE_SECRET_KEY in its own env -
+# see pool-deployments.yaml.j2/job-init.yaml.j2/job-fixup.yaml.j2). This is
+# what keeps the platform's one shared MinIO credential out of every
+# tenant's own database: without it, any tenant's own admin
+# (base.group_system in their own db) could read this row and reach every
+# OTHER tenant's attachments too, since the filestore-rw MinIO policy
+# grants Get/Put/Delete on the whole bucket, not just this tenant's prefix.
+fs_storage_options = {
+    "key": "{{ odoo.filestore_access_key }}",
+    "secret": "$FILESTORE_SECRET_KEY",
+    "endpoint_url": "{{ odoo.filestore_endpoint }}",
+}
+fs_storage_vals = {
+    "name": "MinIO filestore",
+    "code": "filestore",
+    "protocol": "s3",
+    "options": json.dumps(fs_storage_options),
+    # {db_name} is a literal fs_storage placeholder (NOT Jinja) it
+    # substitutes itself - this database's own name - so every tenant
+    # safely shares the one odoo.filestore_bucket without colliding.
+    "directory_path": "{{ odoo.filestore_bucket }}/{db_name}",
+    "use_as_default_for_attachments": True,
+    "eval_options_from_env": True,
+}
+# The OCA-documented workaround for the one gotcha fs_attachment itself
+# ships: attachments created in the same transaction fs_attachment loads
+# in (e.g. install-time icons) still follow this parameter, not the
+# fs.storage record - 'db' keeps them durable in Postgres instead of
+# landing on whichever pod's now-ephemeral filesystem ran the install.
+env["ir.config_parameter"].set_param("ir_attachment.location", "db")
+fs_storage = env["fs.storage"].search([("code", "=", "filestore")], limit=1)
+if fs_storage:
+    fs_storage.write(fs_storage_vals)
+else:
+    env["fs.storage"].create(fs_storage_vals)
+env.cr.commit()

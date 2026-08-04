@@ -2,9 +2,12 @@
 ---
 # Idempotent `odoo shell` fixup - runs on EVERY deploy (not just first
 # init): resets the admin password to the derived ADMIN_PASSWD, refreshes
-# company/country/currency + database.uuid + web.base.url. Country/currency
-# default to Senegal/XOF (matches this platform's l10n_sn/Africa-Dakar
-# defaults) - override the script below if a tenant needs different ones.
+# company/country/currency + database.uuid + web.base.url, and re-upserts
+# the fs.storage record (see fs_storage_upsert.py.j2 - shared with
+# job-init.yaml.j2, mounted here from the fs-storage-scripts ConfigMap).
+# Country/currency default to Senegal/XOF (matches this platform's
+# l10n_sn/Africa-Dakar defaults) - override the script below if a tenant
+# needs different ones.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -94,11 +97,26 @@ spec:
           args:
             - |
               set -eu
-              cat <<PYEOF | odoo shell -c /etc/odoo/odoo.conf -d {{ instance_slug }} --no-http
+              # Quoted heredoc delimiter ('PYEOF', not PYEOF) - the shell
+              # must NOT expand anything inside this Python body. An
+              # unquoted heredoc used to let $ADMIN_PASSWD/$FILESTORE_SECRET_KEY
+              # get substituted before odoo shell ever saw them, so the
+              # RESOLVED plaintext secret got persisted to fs_storage.options
+              # (a row readable by any tenant admin - see
+              # fs_storage_upsert.py.j2's header comment). ADMIN_PASSWD is
+              # read from os.environ instead, in Python, now that the shell
+              # can no longer touch it. This also fixes a latent quoting
+              # hazard: a secret containing '"' or '\' used to produce
+              # invalid JSON/Python once substituted; a literal env var name
+              # has neither.
+              {
+                cat /scripts/fs_storage_upsert.py
+                cat <<'PYEOF'
+              import os
               import uuid
               admin = env['res.users'].search([('login', '=', 'admin')], limit=1)
               if admin:
-                  admin.password = "$ADMIN_PASSWD"
+                  admin.password = os.environ['ADMIN_PASSWD']
               country = env['res.country'].search([('code', '=', 'SN')], limit=1)
               currency = env['res.currency'].search([('name', '=', 'XOF')], limit=1)
               company = env.user.company_id
@@ -110,34 +128,9 @@ spec:
               })
               env['ir.config_parameter'].set_param('database.uuid', str(uuid.uuid4()))
               env['ir.config_parameter'].set_param('web.base.url', "https://{{ default_domain }}")
-              # fs_attachment_s3 (mandatory - see tasks/_resolve-plan-spec.yml):
-              # one fs.storage record, upserted by its fixed `code` so this
-              # stays idempotent across every deploy. {db_name} is a literal
-              # fs_storage placeholder (NOT Jinja) it substitutes itself -
-              # this tenant's own database name, so every tenant safely
-              # shares the one odoo.filestore_bucket without colliding.
-              # ir_attachment.location=db is the OCA-documented workaround
-              # for the one gotcha: attachments created earlier in the same
-              # transaction fs_attachment itself loads in (e.g. install-time
-              # icons) still follow this param, not the fs.storage record -
-              # 'db' keeps them durable instead of landing on this pod's
-              # now-ephemeral filesystem.
-              env['ir.config_parameter'].set_param('ir_attachment.location', 'db')
-              fs_storage_vals = {
-                  'name': 'MinIO filestore',
-                  'code': 'filestore',
-                  'protocol': 's3',
-                  'options': '{"key": "{{ odoo.filestore_access_key }}", "secret": "$FILESTORE_SECRET_KEY", "endpoint_url": "{{ odoo.filestore_endpoint }}"}',
-                  'directory_path': '{{ odoo.filestore_bucket }}/{db_name}',
-                  'use_as_default_for_attachments': True,
-              }
-              fs_storage = env['fs.storage'].search([('code', '=', 'filestore')], limit=1)
-              if fs_storage:
-                  fs_storage.write(fs_storage_vals)
-              else:
-                  env['fs.storage'].create(fs_storage_vals)
               env.cr.commit()
               PYEOF
+              } | odoo shell -c /etc/odoo/odoo.conf -d {{ instance_slug }} --no-http
           env:
             - name: ADMIN_PASSWD
               valueFrom:
@@ -154,6 +147,7 @@ spec:
             - {name: filestore, mountPath: /var/lib/odoo}
             - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
             - {name: oca-addons, mountPath: /opt/oca-addons, readOnly: true}
+            - {name: fs-storage-scripts, mountPath: /scripts, readOnly: true}
           resources:
             requests: {cpu: 250m, memory: 512Mi}
             limits: {cpu: "1", memory: 1Gi}
@@ -163,6 +157,7 @@ spec:
         - {name: filestore, emptyDir: {}}
         - {name: addons, emptyDir: {}}
         - {name: oca-addons, emptyDir: {}}
+        - {name: fs-storage-scripts, configMap: {name: "{{ fs_storage_scripts_configmap_name }}"}}
         - name: addons-deploy-key
           secret:
             secretName: "{{ addons_deploy_key_secret_name }}"
