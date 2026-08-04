@@ -179,6 +179,14 @@
     state: present
     namespace: "{{ xayma_namespace }}"
     template: job-fixup.yaml.j2
+  vars:
+    # deploy legitimately owns version/pool_config_name/pool_secret_name
+    # (real extra_vars/vars/main.yml-derived here) - see job-fixup.yaml.j2's
+    # header comment for why it reads these under different names instead
+    # of the plain ones directly.
+    fixup_version: "{{ version }}"
+    fixup_pool_config_name: "{{ pool_config_name }}"
+    fixup_pool_secret_name: "{{ pool_secret_name }}"
   register: _deploy_fixup_job
 
 # job-fixup.yaml.j2's Job name carries a timestamp suffix
@@ -251,6 +259,15 @@
     template: tenant-ingressroute.yaml.j2
   vars:
     instance_state: running
+    # deploy legitimately owns pool_id/pool_http_name/pool_gevent_name/
+    # version/plan (real extra_vars/vars/main.yml-derived here) - see
+    # tenant-ingressroute.yaml.j2's header comment for why it reads these
+    # under different names instead of the plain ones directly.
+    ingress_pool_http_name: "{{ pool_http_name }}"
+    ingress_pool_gevent_name: "{{ pool_gevent_name }}"
+    tenant_assignment_pool_id: "{{ pool_id }}"
+    tenant_assignment_version: "{{ version }}"
+    tenant_assignment_plan: "{{ plan }}"
 
 - name: "Smoke test the tenant's default host [{{ tenant_name }}]"
   ansible.builtin.uri:

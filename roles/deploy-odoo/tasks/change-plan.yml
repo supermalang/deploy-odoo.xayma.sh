@@ -18,9 +18,37 @@
       move is odoo_action=change-version, which is out of scope (see
       README "Non-goals").
 
+# `version` is meant to stay pinned to tenant_version below - it is NOT
+# real input for change-plan, ever (see the comment above and README
+# "Actions"). But version IS an AWX survey field with a default, and
+# extra_vars ALWAYS win over set_fact/task vars (no in-play mechanism can
+# override them) - so if the survey sends one that doesn't match
+# tenant_version (which it will, by default, on every call through the
+# one shared Job Template), the `vars: version: tenant_version` overrides
+# on _resolve-plan-spec.yml/_resolve-pool.yml below are silently
+# ineffective, and this could resolve/create/target an entirely different
+# (wrong-version) pool. This guard only catches the mismatch loudly - it
+# does NOT fix _resolve-pool.yml's own dependency on the plain `version`/
+# `plan` vars, which would need the same caller-supplied-name treatment
+# job-fixup.yaml.j2/tenant-ingressroute.yaml.j2 got, applied through
+# vars/main.yml's whole pool_id/pool_http_name/pool_pg_role/... chain -
+# a larger, separate change, not done here.
+- name: "Assert no survey-supplied version silently targets the wrong pool [{{ tenant_name }}]"
+  ansible.builtin.assert:
+    that: version is not defined or (version | string) == (tenant_version | string)
+    fail_msg: >-
+      version extra_var ({{ version | default('undefined') }}) does not
+      match this tenant's actual current version ({{ tenant_version }}).
+      Do not send version when launching odoo_action=change-plan - it is
+      never real input for this action and this run must not proceed with
+      a mismatched one silently targeting the wrong pool.
+
 # Resolve the TARGET plan_spec + ensure the TARGET pool exists (create-only
 # semantics apply - see _resolve-pool.yml). `version` is forced to the
-# tenant's CURRENT (unchanged) version for both imports below.
+# tenant's CURRENT (unchanged) version for both imports below - a task-vars
+# override that ONLY holds because the assert above has already guaranteed
+# version (if the survey sent one) already equals tenant_version; it is
+# not, by itself, a fix for the general problem (see comment above).
 - name: Resolve the effective plan_spec
   ansible.builtin.import_tasks: _resolve-plan-spec.yml
   vars:
@@ -60,6 +88,12 @@
     _pgb_override_slug: "{{ instance_slug }}"
     _pgb_override_cap: "{{ tenant_spec.tenant_db_max_connections }}"
 
+# pool_id/pool_http_name/pool_gevent_name are NOT used here (see
+# tenant-ingressroute.yaml.j2's header comment) - the NEW pool id is built
+# directly from tenant_version (pinned, guarded above) + plan (the real,
+# intended target extra_var - this is the one legitimate case where `plan`
+# SHOULD win from extra_vars), matching vars/main.yml's own
+# pool_id/pool_http_name/pool_gevent_name formula.
 - name: "Patch the ratelimit Middleware + IngressRoute to the new pool/spec [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -68,9 +102,12 @@
     template: tenant-ingressroute.yaml.j2
   vars:
     instance_state: "{{ tenant_state }}"
-    version: "{{ tenant_version }}"
     custom_domain: "{{ tenant_custom_domain }}"
-    # `plan` is already the new target plan from extra_vars - not overridden here.
+    ingress_pool_http_name: "odoo{{ tenant_version }}-{{ plan }}-http"
+    ingress_pool_gevent_name: "odoo{{ tenant_version }}-{{ plan }}-gevent"
+    tenant_assignment_pool_id: "odoo{{ tenant_version }}-{{ plan }}"
+    tenant_assignment_version: "{{ tenant_version }}"
+    tenant_assignment_plan: "{{ plan }}"
 
 # If the OLD pool just lost its last tenant, scale it to 0 (never delete its
 # objects) - same rule delete-tenant.yml applies.

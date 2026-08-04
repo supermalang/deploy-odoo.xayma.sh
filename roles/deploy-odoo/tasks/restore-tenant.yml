@@ -100,26 +100,29 @@
 # restore ends with working filestore wiring regardless of how old the
 # dump is - same idempotent Job odoo_action=deploy runs on every call.
 #
-# job-fixup.yaml.j2 renders pool_config_name/pool_secret_name, which are
-# BOTH derived from the plain `version`/`plan` vars (vars/main.yml's
-# pool_id), not from tenant_version/tenant_plan - and restore, unlike
-# deploy, never receives version/plan as extra_vars (see README "Actions"),
-# so those plain vars would otherwise still be whatever the role defaults
-# say (xayma_odoo.version/plan), silently rendering the WRONG pool's
-# ConfigMap/Secret if this tenant isn't on that default pool. Overriding
-# them from _recover-tenant.yml's already-recovered tenant_version/
-# tenant_plan is what makes this resolve to the tenant's ACTUAL pool.
-- name: "Recover version/plan as plain vars for job-fixup.yaml.j2's pool_config_name/pool_secret_name [{{ tenant_name }}]"
-  ansible.builtin.set_fact:
-    version: "{{ tenant_version }}"
-    plan: "{{ tenant_plan }}"
-
+# job-fixup.yaml.j2 renders fixup_version/fixup_pool_config_name/
+# fixup_pool_secret_name (NOT the plain version/pool_config_name/
+# pool_secret_name - see that template's header comment) precisely so this
+# works correctly. version/plan are AWX survey fields with defaults, and
+# extra_vars ALWAYS win over set_fact/task vars - a PRIOR version of this
+# fix tried `set_fact: version: tenant_version` here, which is silently a
+# no-op the instant the survey sends a version/plan extra_var (which it
+# does, by default, since every action launches through the one shared
+# Job Template/survey - see README "Configuration"). That let fixup render
+# the DEFAULT pool's ConfigMap/Secret instead of this tenant's, green and
+# silent. Passing fixup_pool_config_name/fixup_pool_secret_name directly,
+# built from tenant_pool_id (already recovered, not derived from version/
+# plan at all), has no name for any extra_var to collide with.
 - name: "Apply the fixup Job [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
     namespace: "{{ xayma_namespace }}"
     template: job-fixup.yaml.j2
+  vars:
+    fixup_version: "{{ tenant_version }}"
+    fixup_pool_config_name: "{{ tenant_pool_id }}-config"
+    fixup_pool_secret_name: "{{ tenant_pool_id }}-secret"
   register: _restore_fixup_job
 
 - name: "Wait for the fixup Job to complete [{{ tenant_name }}]"

@@ -44,6 +44,22 @@ spec:
 # "Actions"). instance_state (running|suspended|stopped) picks the target:
 # the tenant's pool when running, or the shared suspend-backend otherwise -
 # with the websocket route DROPPED entirely when not running.
+#
+# Reads ingress_pool_http_name/ingress_pool_gevent_name AND
+# tenant_assignment_pool_id/tenant_assignment_version/tenant_assignment_plan
+# (the latter three feed tenant_pool_assignment_labels - see vars/main.yml),
+# NOT the plain pool_http_name/pool_gevent_name/pool_id/version/plan
+# directly. version/plan are AWX survey fields - extra_vars ALWAYS win over
+# set_fact/task vars (no exception), so every caller on a path where the
+# README says version/plan are NOT supplied (i.e. everything except
+# deploy/change-plan) MUST derive these from tenant_version/tenant_plan/
+# tenant_pool_id (_recover-tenant.yml) and pass them under these
+# survey-safe names - trying to override the plain names directly is
+# silently ineffective the moment the survey sends them, which it does by
+# default (see git history for the incident this comment exists because of).
+# This is also what keeps the durable labels this file writes from getting
+# corrupted with the wrong pool-id/version/plan on the NEXT action's
+# _recover-tenant.yml read.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -60,7 +76,7 @@ spec:
       kind: Rule
       priority: 100
       services:
-        - {name: {{ pool_gevent_name }}, port: 8072}
+        - {name: {{ ingress_pool_gevent_name }}, port: 8072}
       middlewares:
         - {name: mw-errors-404}
         - {name: mw-errors-50x}
@@ -69,7 +85,7 @@ spec:
       kind: Rule
       priority: 50
       services:
-        - {name: {{ pool_http_name }}, port: 8069}
+        - {name: {{ ingress_pool_http_name }}, port: 8069}
       middlewares:
         - {name: mw-errors-404}
         - {name: mw-errors-50x}
@@ -109,7 +125,7 @@ spec:
       kind: Rule
       priority: 100
       services:
-        - {name: {{ pool_gevent_name }}, port: 8072}
+        - {name: {{ ingress_pool_gevent_name }}, port: 8072}
       middlewares:
         - {name: {{ tenant_hostrewrite_mw_name }}}
         - {name: mw-errors-404}
@@ -119,7 +135,7 @@ spec:
       kind: Rule
       priority: 50
       services:
-        - {name: {{ pool_http_name }}, port: 8069}
+        - {name: {{ ingress_pool_http_name }}, port: 8069}
       middlewares:
         - {name: {{ tenant_hostrewrite_mw_name }}}
         - {name: mw-errors-404}

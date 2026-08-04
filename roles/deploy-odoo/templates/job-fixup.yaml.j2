@@ -8,6 +8,17 @@
 # Country/currency default to Senegal/XOF (matches this platform's
 # l10n_sn/Africa-Dakar defaults) - override the script below if a tenant
 # needs different ones.
+#
+# Deliberately renders fixup_version/fixup_pool_config_name/
+# fixup_pool_secret_name, NOT the plain version/pool_config_name/
+# pool_secret_name vars/main.yml also derives from version/plan - those
+# are AWX survey fields (extra_vars ALWAYS win over set_fact/task vars, no
+# exception, per Ansible's own precedence rules), and this Job is called
+# from restore-tenant.yml, where version/plan must NOT come from whatever
+# the survey happened to send. Callers set these three explicitly:
+# deploy-tenant.yml from its own (legitimately real) version/pool_*;
+# restore-tenant.yml from tenant_version/tenant_pool_id, recovered from
+# live state. Never widen this template to read the plain names again.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -81,7 +92,7 @@ spec:
           env:
             - {name: DB_HOST, value: "{{ pg_target }}"}
           envFrom:
-            - secretRef: {name: "{{ pool_secret_name }}"}
+            - secretRef: {name: "{{ fixup_pool_secret_name }}"}
           volumeMounts:
             - {name: config, mountPath: /config, readOnly: true}
             - {name: etc-odoo, mountPath: /etc/odoo}
@@ -96,7 +107,7 @@ spec:
           # --no-http below means session_redis's own runtime is never
           # invoked (ODOO_SESSION_REDIS is intentionally left unset here -
           # see pool-deployments.yaml.j2 for where it's actually needed).
-          image: "{{ odoo_image_repo }}:{{ version }}.0"
+          image: "{{ odoo_image_repo }}:{{ fixup_version }}.0"
           command: ["/bin/bash", "-c"]
           args:
             - |
@@ -156,7 +167,7 @@ spec:
             requests: {cpu: 250m, memory: 512Mi}
             limits: {cpu: "1", memory: 1Gi}
       volumes:
-        - {name: config, configMap: {name: "{{ pool_config_name }}"}}
+        - {name: config, configMap: {name: "{{ fixup_pool_config_name }}"}}
         - {name: etc-odoo, emptyDir: {}}
         - {name: filestore, emptyDir: {}}
         - {name: addons, emptyDir: {}}

@@ -154,12 +154,22 @@ tenant_labels: >-
        'xayma.sh/instance': instance_slug}) }}
 # Applied on top of tenant_labels for the tenant's IngressRoute ONLY - the
 # durable record of pool assignment/state that _recover-tenant.yml reads
-# back on every action that doesn't get version/plan resupplied.
+# back on every action that doesn't get version/plan resupplied. Built from
+# tenant_assignment_pool_id/tenant_assignment_version/tenant_assignment_plan
+# - CALLER-SUPPLIED, not the plain pool_id/version/plan - because version/
+# plan are AWX survey fields and extra_vars always win over set_fact/task
+# vars, so a caller on a path where those aren't supposed to be resupplied
+# (everything except deploy/change-plan) that tried overriding pool_id/
+# version/plan directly would silently write the WRONG values into this
+# durable record the moment the survey sends them (which it does by
+# default) - corrupting what the NEXT action's _recover-tenant.yml reads
+# back, not just this one render. See tenant-ingressroute.yaml.j2's header
+# comment for the full explanation and which vars each caller must set.
 tenant_pool_assignment_labels: >-
   {{ tenant_labels | combine({
-       'xayma.sh/pool-id': pool_id,
-       'xayma.sh/odoo-version': version | string,
-       'xayma.sh/plan': plan,
+       'xayma.sh/pool-id': tenant_assignment_pool_id,
+       'xayma.sh/odoo-version': tenant_assignment_version | string,
+       'xayma.sh/plan': tenant_assignment_plan,
        'xayma.sh/state': instance_state | default('running')}) }}
 # Annotation (not a label - an operational value, not a selector target)
 # recording this tenant's current PgBouncer cap, so

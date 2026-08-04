@@ -52,6 +52,9 @@
     label: "{{ item.kind }}"
   when: custom_domain | default('') | length == 0
 
+# version/plan are NOT set here (see tenant-ingressroute.yaml.j2's header
+# comment) - edit-domain never changes pool assignment either, same reason
+# as _set-tenant-state.yml.
 - name: "Reapply the IngressRoute for the new domain set [{{ tenant_name ~ ' (' ~ tenant_state ~ ')' }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -60,5 +63,8 @@
     template: tenant-ingressroute.yaml.j2
   vars:
     instance_state: "{{ tenant_state }}"
-    version: "{{ tenant_version }}"
-    plan: "{{ tenant_plan }}"
+    ingress_pool_http_name: "{{ tenant_pool_id }}-http"
+    ingress_pool_gevent_name: "{{ tenant_pool_id }}-gevent"
+    tenant_assignment_pool_id: "{{ tenant_pool_id }}"
+    tenant_assignment_version: "{{ tenant_version }}"
+    tenant_assignment_plan: "{{ tenant_plan }}"

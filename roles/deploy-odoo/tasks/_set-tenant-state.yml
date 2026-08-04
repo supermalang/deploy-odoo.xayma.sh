@@ -57,6 +57,11 @@
     state: present
   when: _state_target == 'running'
 
+# version/plan are NOT set here (see tenant-ingressroute.yaml.j2's header
+# comment) - this action never changes pool assignment, so every name the
+# template needs is derived straight from _recover-tenant.yml's own
+# tenant_pool_id/tenant_version/tenant_plan, immune to whatever version/
+# plan the AWX survey happens to also send on this call.
 - name: "Repoint the IngressRoute [{{ tenant_name ~ ' (' ~ _state_target ~ ')' }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -65,6 +70,9 @@
     template: tenant-ingressroute.yaml.j2
   vars:
     instance_state: "{{ _state_target }}"
-    version: "{{ tenant_version }}"
-    plan: "{{ tenant_plan }}"
     custom_domain: "{{ tenant_custom_domain }}"
+    ingress_pool_http_name: "{{ tenant_pool_id }}-http"
+    ingress_pool_gevent_name: "{{ tenant_pool_id }}-gevent"
+    tenant_assignment_pool_id: "{{ tenant_pool_id }}"
+    tenant_assignment_version: "{{ tenant_version }}"
+    tenant_assignment_plan: "{{ tenant_plan }}"
