@@ -20,10 +20,18 @@
 # --force`, verified against a real versioned bucket to actually remove
 # delete markers too, not just `rclone purge`), and it should be its own
 # explicit action/flag, not a silent change to what `delete` does today.
+#
+# Name carries a timestamp, unlike most fixed-name mutex Jobs in this repo -
+# deliberately, so that re-running odoo_action=delete for the same tenant
+# within ttlSecondsAfterFinished (1h) applies a genuinely NEW Job instead
+# of a no-op re-apply of an already-Succeeded one with the same name. A
+# static name here would let delete-tenant.yml's wait see the OLD Job's
+# success and report green without actually re-purging anything - the same
+# shape of bug job-fixup.yaml.j2's Job name mismatch was.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: purge-filestore-{{ instance_slug }}
+  name: purge-filestore-{{ instance_slug }}-{{ ansible_date_time.iso8601_basic_short | lower }}
   namespace: {{ xayma_namespace }}
   labels: {{ tenant_labels | combine({'xayma.sh/job-role': 'fileops'}) | to_json }}
 spec:
