@@ -6,7 +6,8 @@
 # tasks/_sync-pgbouncer-tenants.yml already trusts), not from anything the
 # calling app believes is "active" - if the app's own nightly backup loop
 # silently drops a tenant, no backup Job ever runs and Job-failure
-# notifications (see roles/configure-awx) never fire either; this check is
+# notifications (see README "AWX" - the Job Template's
+# notification_templates_error) never fire either; this check is
 # the independent backstop for exactly that blind spot. Suspended tenants
 # are still checked (only `stopped` is excluded) - pausing snapshots for a
 # suspended-but-still-paying tenant is a policy call for later, not this fix.

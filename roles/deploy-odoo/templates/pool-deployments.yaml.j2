@@ -30,8 +30,14 @@ spec:
     metadata:
       labels: {{ pool_labels_http | to_json }}
     spec:
-      # Preferred, not required (see README "Before adding node 2") -
-      # correct-but-inert on a single node; pods just co-locate happily.
+      # podAntiAffinity stays PREFERRED (soft) - replicas spreading across
+      # nodes labelled odoo.tenants_node_label is a nice-to-have, never worth
+      # blocking a pod over. nodeAffinity below is REQUIRED (hard) - see
+      # README "Capacity planning": this pool only ever runs on nodes
+      # carrying that label, regardless of how many such nodes exist or how
+      # big they are. No label anywhere in the cluster = every pod here
+      # stays Pending (see _resolve-pool.yml's readyReplicas wait, which
+      # then times out and fails the run).
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -43,7 +49,56 @@ spec:
                     app.kubernetes.io/name: odoo
                     xayma.sh/pool-id: {{ pool_id }}
                     xayma.sh/pool-role: http
+{% if odoo.tenants_node_label %}
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: "{{ odoo.tenants_node_label.key }}", operator: In, values: ["{{ odoo.tenants_node_label.value }}"]}
+{% endif %}
       initContainers:
+        # No shared PVC - every pod clones its own copy of odoo.addons_repo_url
+        # at odoo.addons_repo_ref fresh on start (see README "Before adding
+        # node 2"/01-deploy-odoo-defaults.yml's comment on addons_repo_ref
+        # for why a branch name here is bootstrap-only, not the production
+        # end state). Auth is the addons-deploy-key Secret (a read-only
+        # GitHub deploy key) - see addons-deploy-key-secret.yaml.j2.
+        - name: clone-addons
+          image: alpine/git:{{ versions.git }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519"
+              git clone {{ odoo.addons_repo_url }} /addons;
+              cd /addons;
+              git checkout {{ odoo.addons_repo_ref }}
+          volumeMounts:
+            - {name: addons-deploy-key, mountPath: /keys, readOnly: true}
+            - {name: addons, mountPath: /addons}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+        # Separate, independent clone from OCA's PUBLIC storage repo (no
+        # deploy key needed) - fs_storage/fs_attachment/fs_attachment_s3 are
+        # mandatory platform infra (see tasks/_resolve-plan-spec.yml), not
+        # part of the tenant's own custom addons repo above.
+        - name: clone-oca-storage
+          image: alpine/git:{{ versions.git }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              git clone {{ odoo.oca_storage_repo_url }} /oca-addons;
+              cd /oca-addons;
+              git checkout {{ odoo.oca_storage_repo_ref }}
+          volumeMounts:
+            - {name: oca-addons, mountPath: /oca-addons}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
         - name: render-config
           image: busybox:{{ versions.busybox }}
           command:
@@ -96,6 +151,7 @@ spec:
             - {name: etc-odoo, mountPath: /etc/odoo}
             - {name: filestore, mountPath: /var/lib/odoo}
             - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
+            - {name: oca-addons, mountPath: /opt/oca-addons, readOnly: true}
           resources:
             requests: {cpu: "{{ pool_spec.pod.cpu_request }}", memory: "{{ pool_spec.pod.mem_request }}"}
             limits: {cpu: "{{ pool_spec.pod.cpu_limit }}", memory: "{{ pool_spec.pod.mem_limit }}"}
@@ -116,8 +172,17 @@ spec:
       volumes:
         - {name: config, configMap: {name: "{{ pool_config_name }}"}}
         - {name: etc-odoo, emptyDir: {}}
-        - {name: filestore, persistentVolumeClaim: {claimName: odoo-filestore}}
-        - {name: addons, persistentVolumeClaim: {claimName: odoo-addons}}
+        # No PVC - live attachments go straight to the odoo-filestore MinIO
+        # bucket via fs_attachment_s3 (see job-fixup.yaml.j2). This is
+        # scratch space only now (Odoo's data_dir, misc temp use) - nothing
+        # written here needs to survive the pod.
+        - {name: filestore, emptyDir: {}}
+        - {name: addons, emptyDir: {}}
+        - {name: oca-addons, emptyDir: {}}
+        - name: addons-deploy-key
+          secret:
+            secretName: "{{ addons_deploy_key_secret_name }}"
+            defaultMode: 0400
 ---
 apiVersion: v1
 kind: Service
@@ -156,7 +221,54 @@ spec:
     metadata:
       labels: {{ pool_labels_cron | to_json }}
     spec:
+{% if odoo.tenants_node_label %}
+      # REQUIRED (hard) - see {pool}-http's identical nodeAffinity above.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: "{{ odoo.tenants_node_label.key }}", operator: In, values: ["{{ odoo.tenants_node_label.value }}"]}
+{% endif %}
       initContainers:
+        # No shared PVC - see {pool}-http's identical clone-addons above for
+        # the rationale (this pool role needs the same addons content).
+        - name: clone-addons
+          image: alpine/git:{{ versions.git }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519"
+              git clone {{ odoo.addons_repo_url }} /addons;
+              cd /addons;
+              git checkout {{ odoo.addons_repo_ref }}
+          volumeMounts:
+            - {name: addons-deploy-key, mountPath: /keys, readOnly: true}
+            - {name: addons, mountPath: /addons}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+        # Separate, independent clone from OCA's PUBLIC storage repo (no
+        # deploy key needed) - fs_storage/fs_attachment/fs_attachment_s3 are
+        # mandatory platform infra (see tasks/_resolve-plan-spec.yml), not
+        # part of the tenant's own custom addons repo above.
+        - name: clone-oca-storage
+          image: alpine/git:{{ versions.git }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              git clone {{ odoo.oca_storage_repo_url }} /oca-addons;
+              cd /oca-addons;
+              git checkout {{ odoo.oca_storage_repo_ref }}
+          volumeMounts:
+            - {name: oca-addons, mountPath: /oca-addons}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
         - name: render-config
           image: busybox:{{ versions.busybox }}
           command:
@@ -209,6 +321,7 @@ spec:
             - {name: etc-odoo, mountPath: /etc/odoo}
             - {name: filestore, mountPath: /var/lib/odoo}
             - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
+            - {name: oca-addons, mountPath: /opt/oca-addons, readOnly: true}
           resources:
             requests: {cpu: "{{ pool_spec.pod.cpu_request }}", memory: "{{ pool_spec.pod.mem_request }}"}
             limits: {cpu: "{{ pool_spec.pod.cpu_limit }}", memory: "{{ pool_spec.pod.mem_limit }}"}
@@ -224,8 +337,17 @@ spec:
       volumes:
         - {name: config, configMap: {name: "{{ pool_config_name }}"}}
         - {name: etc-odoo, emptyDir: {}}
-        - {name: filestore, persistentVolumeClaim: {claimName: odoo-filestore}}
-        - {name: addons, persistentVolumeClaim: {claimName: odoo-addons}}
+        # No PVC - live attachments go straight to the odoo-filestore MinIO
+        # bucket via fs_attachment_s3 (see job-fixup.yaml.j2). This is
+        # scratch space only now (Odoo's data_dir, misc temp use) - nothing
+        # written here needs to survive the pod.
+        - {name: filestore, emptyDir: {}}
+        - {name: addons, emptyDir: {}}
+        - {name: oca-addons, emptyDir: {}}
+        - name: addons-deploy-key
+          secret:
+            secretName: "{{ addons_deploy_key_secret_name }}"
+            defaultMode: 0400
 ---
 # {pool}-gevent: 1 replica, db_host=Postgres DIRECT, Service :8072.
 # The gevent/LiveChat worker is NOT selectable via any env var or a
@@ -254,7 +376,54 @@ spec:
     metadata:
       labels: {{ pool_labels_gevent | to_json }}
     spec:
+{% if odoo.tenants_node_label %}
+      # REQUIRED (hard) - see {pool}-http's identical nodeAffinity above.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - {key: "{{ odoo.tenants_node_label.key }}", operator: In, values: ["{{ odoo.tenants_node_label.value }}"]}
+{% endif %}
       initContainers:
+        # No shared PVC - see {pool}-http's identical clone-addons above for
+        # the rationale (this pool role needs the same addons content).
+        - name: clone-addons
+          image: alpine/git:{{ versions.git }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519"
+              git clone {{ odoo.addons_repo_url }} /addons;
+              cd /addons;
+              git checkout {{ odoo.addons_repo_ref }}
+          volumeMounts:
+            - {name: addons-deploy-key, mountPath: /keys, readOnly: true}
+            - {name: addons, mountPath: /addons}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+        # Separate, independent clone from OCA's PUBLIC storage repo (no
+        # deploy key needed) - fs_storage/fs_attachment/fs_attachment_s3 are
+        # mandatory platform infra (see tasks/_resolve-plan-spec.yml), not
+        # part of the tenant's own custom addons repo above.
+        - name: clone-oca-storage
+          image: alpine/git:{{ versions.git }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              git clone {{ odoo.oca_storage_repo_url }} /oca-addons;
+              cd /oca-addons;
+              git checkout {{ odoo.oca_storage_repo_ref }}
+          volumeMounts:
+            - {name: oca-addons, mountPath: /oca-addons}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
         - name: render-config
           image: busybox:{{ versions.busybox }}
           command:
@@ -316,6 +485,7 @@ spec:
             - {name: etc-odoo, mountPath: /etc/odoo}
             - {name: filestore, mountPath: /var/lib/odoo}
             - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
+            - {name: oca-addons, mountPath: /opt/oca-addons, readOnly: true}
           resources:
             requests: {cpu: "{{ pool_spec.pod.cpu_request }}", memory: "{{ pool_spec.pod.mem_request }}"}
             limits: {cpu: "{{ pool_spec.pod.cpu_limit }}", memory: "{{ pool_spec.pod.mem_limit }}"}
@@ -331,8 +501,17 @@ spec:
       volumes:
         - {name: config, configMap: {name: "{{ pool_config_name }}"}}
         - {name: etc-odoo, emptyDir: {}}
-        - {name: filestore, persistentVolumeClaim: {claimName: odoo-filestore}}
-        - {name: addons, persistentVolumeClaim: {claimName: odoo-addons}}
+        # No PVC - live attachments go straight to the odoo-filestore MinIO
+        # bucket via fs_attachment_s3 (see job-fixup.yaml.j2). This is
+        # scratch space only now (Odoo's data_dir, misc temp use) - nothing
+        # written here needs to survive the pod.
+        - {name: filestore, emptyDir: {}}
+        - {name: addons, emptyDir: {}}
+        - {name: oca-addons, emptyDir: {}}
+        - name: addons-deploy-key
+          secret:
+            secretName: "{{ addons_deploy_key_secret_name }}"
+            defaultMode: 0400
 ---
 apiVersion: v1
 kind: Service

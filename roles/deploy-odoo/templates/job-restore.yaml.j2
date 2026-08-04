@@ -6,10 +6,12 @@
 # platform MinIO) of kind `snapshot_kind` (daily|adhoc, default daily).
 # tasks/restore-tenant.yml REVOKEs the pool role's CONNECT + terminates
 # backends before applying this and re-GRANTs afterwards - no scaling steps
-# (there is no per-tenant process to scale in the pool model). Filestore
-# restore is scoped to THIS TENANT's own subdirectory
-# (/filestore/{{ '{{ instance_slug }}' }}) only - the PVC is shared by
-# every tenant now, unlike the old per-instance role.
+# (there is no per-tenant process to scale in the pool model).
+#
+# DB-only, deliberately - see job-backup.yaml.j2's identical note: filestore
+# lives in the platform MinIO's odoo-filestore bucket directly now, which
+# this Job has no reason to touch (nothing here can roll it back to a prior
+# point in time either - see README "Known caveats").
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -49,6 +51,7 @@ spec:
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: 500m, memory: 256Mi}
+      containers:
         - name: pg-restore
           image: postgres:{{ versions.postgres }}
           command:
@@ -70,25 +73,5 @@ spec:
           resources:
             requests: {cpu: 100m, memory: 256Mi}
             limits: {cpu: 500m, memory: 512Mi}
-      containers:
-        - name: filestore-restore
-          image: busybox:{{ versions.busybox }}
-          command:
-            - sh
-            - -c
-            - >-
-              set -eu;
-              mkdir -p /filestore/{{ instance_slug }};
-              rm -rf /filestore/{{ instance_slug }}/* /filestore/{{ instance_slug }}/..?* /filestore/{{ instance_slug }}/.[!.]* 2>/dev/null || true;
-              tar xzf /restore/filestore.tar.gz -C /filestore/{{ instance_slug }}
-          volumeMounts:
-            - {name: restore, mountPath: /restore}
-            - {name: filestore, mountPath: /filestore}
-          resources:
-            requests: {cpu: 50m, memory: 128Mi}
-            limits: {cpu: 200m, memory: 256Mi}
       volumes:
         - {name: restore, emptyDir: {}}
-        - name: filestore
-          persistentVolumeClaim:
-            claimName: odoo-filestore

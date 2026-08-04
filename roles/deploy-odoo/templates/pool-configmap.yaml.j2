@@ -51,7 +51,12 @@ data:
     http_port = 8069
     proxy_mode = True
 
-    addons_path = /opt/extra-addons
+    ; Two entries: this pool's own custom/community addons (git-cloned from
+    ; odoo.addons_repo_url) and OCA's storage repo (fs_storage/fs_attachment/
+    ; fs_attachment_s3 - mandatory, see tasks/_resolve-plan-spec.yml),
+    ; git-cloned separately since it's a different, public, independently-
+    ; pinned upstream (see pool-deployments.yaml.j2's two clone-* initContainers).
+    addons_path = /opt/extra-addons,/opt/oca-addons
     ; session_redis (MANDATORY - no filesystem fallback) is configured
     ; ENTIRELY via ODOO_SESSION_REDIS_* environment variables on the odoo
     ; process, not here - see pool-deployments.yaml.j2. Loading it via

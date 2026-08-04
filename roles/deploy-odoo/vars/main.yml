@@ -79,6 +79,8 @@ suspend_backend_name: suspend-backend
 pg_superuser_secret_name: pg-superuser
 redis_secret_name: redis-auth
 minio_secret_name: minio-credentials
+addons_deploy_key_secret_name: addons-deploy-key
+filestore_secret_name: filestore-credentials
 pgadmin_ro_role: pgadmin_ro
 backup_ro_role: backup_ro
 pgbouncer_auth_role: pgbouncer_auth
@@ -161,7 +163,7 @@ tenant_pool_assignment_labels: >-
 tenant_pool_assignment_annotations: >-
   {{ {tenant_db_max_connections_annotation_key: tenant_spec.tenant_db_max_connections | string} }}
 
-# Job pods (init/fixup/restore/backup/sync-addons) - `xayma.sh/job-role`
+# Job pods (init/fixup/restore/backup) - `xayma.sh/job-role`
 # drives the jobs->pg/jobs->pgbouncer/jobs->redis NetworkPolicy selectors
 # (see templates/networkpolicies-platform.yaml.j2).
 tenant_job_labels: >-

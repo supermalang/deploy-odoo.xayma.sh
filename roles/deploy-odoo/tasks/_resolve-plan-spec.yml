@@ -42,7 +42,16 @@
       cron: "{{ _resolved_spec.cron }}"
       db_maxconn: "{{ _resolved_spec.db_maxconn }}"
     tenant_spec:
-      init_modules: "{{ _resolved_spec.init_modules }}"
+      # fs_storage/fs_attachment/fs_attachment_s3 (S3-backed ir.attachment
+      # storage - see job-fixup.yaml.j2's fs.storage record, README "Before
+      # adding node 2") are MANDATORY platform infrastructure, not a plan/
+      # tenant choice, exactly like session_redis - appended here so no plan
+      # catalog entry needs to remember them and no plan_spec sent by the
+      # app can accidentally omit them. `unique` guards against a duplicate
+      # if a plan_spec ever lists one explicitly too.
+      init_modules: >-
+        {{ (_resolved_spec.init_modules.split(',') +
+            ['fs_storage', 'fs_attachment', 'fs_attachment_s3']) | unique | join(',') }}
       tenant_db_max_connections: "{{ _resolved_spec.tenant_db_max_connections }}"
       ratelimit: "{{ _resolved_spec.ratelimit }}"
 

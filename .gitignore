@@ -1,3 +1,5 @@
 vault_password
 production
 .devcontainer/secrets.env
+addons_deploy_key
+addons_deploy_key.pub

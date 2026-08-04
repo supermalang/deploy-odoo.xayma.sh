@@ -6,8 +6,9 @@
 # diff. Architecture:
 #   - ONE namespace (`xayma_namespace`) for the whole tier - no more
 #     per-customer namespaces.
-#   - A tenant is a Postgres database + filestore directory + IngressRoute
-#     (+ Certificate only for custom_domain) - never a workload of its own.
+#   - A tenant is a Postgres database + an ir.attachment prefix in the
+#     platform MinIO's odoo-filestore bucket + IngressRoute (+ Certificate
+#     only for custom_domain) - never a workload of its own.
 #   - Compute is organized in POOLS keyed by (version, plan); see
 #     00-plans.yml for the plan catalog and vars/main.yml for pool_id.
 #
@@ -103,12 +104,16 @@ plan_spec_hard_fallback:
 odoo:
   storage_class: local-path
 
-  # Namespace-wide singleton PVCs (was per-instance) - sized generously since
-  # every tenant now shares them; resizing is a manual PVC edit (local-path's
-  # online-expansion support depends on the underlying filesystem - verify
-  # before relying on it).
-  filestore_storage: 50Gi
-  addons_storage: 5Gi
+  # PREFERRED (soft) node placement for pool pods - see README "Before
+  # adding node 2". The web tier carries no PVCs at all now (see
+  # addons_repo_url/filestore_bucket above), so unlike postgres.node_selector
+  # below (a HARD requirement - its PVC really is pinned to one node) this
+  # is a preference the scheduler can override: a pod still lands on any
+  # node if the preferred one is full, draining, or doesn't exist yet. This
+  # role does NOT apply this label to any node itself - `kubectl label node
+  # <node-2-name> xayma.sh/node-role=tenants` is a one-time manual step
+  # (see README "Manual steps"). Empty dict = no preference at all.
+  tenants_node_label: {key: "xayma.sh/node-role", value: "tenants"}
 
   # Platform MinIO (internal, snapshot target for backup/restore) - endpoint/
   # bucket match install-platform.xayma.sh's deploy-minio role (one MinIO,
@@ -123,10 +128,52 @@ odoo:
   snapshot_access_key: "xayma.snapshots"
   snapshot_secret_key: "{{ vault_odoo_snapshot_secret_key }}"
 
-  # odoo_action=sync-addons (git pull onto the addons PVC). No default repo
-  # URL on purpose: it must be supplied per-run (-e addons_repo_url=...)
-  # since it is credential-adjacent - see tasks/sync-addons.yml.
+  # Live ir.attachment storage (fs_attachment_s3, see job-fixup.yaml.j2's
+  # fs.storage record) - a SEPARATE bucket + scoped MinIO user from
+  # snapshot_bucket/snapshot_access_key above: this one is written by every
+  # tenant's live traffic, not just backup/restore Jobs, and least-privilege
+  # says a credential that can touch live attachment data should never also
+  # be the one that can touch backups (or vice versa). This repo does not
+  # and should not create the `xayma.filestore` MinIO user/policy/bucket -
+  # see README "Manual steps".
+  filestore_bucket: odoo-filestore
+  filestore_endpoint: "http://minio.xayma-storage.svc.cluster.local:9000"
+  filestore_access_key: "xayma.filestore"
+  filestore_secret_key: "{{ vault_odoo_filestore_secret_key }}"
+
+  # Community/custom addons are git-cloned fresh into an emptyDir by a
+  # `clone-addons` initContainer on every pool pod + init/fixup Job (see
+  # pool-deployments.yaml.j2) - no shared PVC, so every pod's addons content
+  # is exactly what this ref resolved to at that pod's OWN start time. Auth
+  # is the `addons_deploy_key_secret_name` Secret (vault_odoo_addons_deploy_key
+  # - a read-only GitHub deploy key), never baked into this URL.
+  addons_repo_url: "git@github.com:supermalang/odoo-modules.xayma.sh.git"
+  # A branch name here means different pods (new replicas, restarts, a
+  # rolling update mid-flight) can clone DIFFERENT commits if the branch
+  # moves between those pod starts - fine for bootstrapping/testing an empty
+  # repo, but production tenant rollouts should pin a literal 40-char commit
+  # SHA instead (git checkout accepts either, so no other change is needed) -
+  # bump it deliberately when you want a rollout, never let it float.
   addons_repo_ref: main
+  # GitHub's own published ed25519 host key (see
+  # https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints) -
+  # pinned so `GIT_SSH_COMMAND`'s StrictHostKeyChecking=yes has something to
+  # verify against on every clone without ever having done an interactive
+  # first-connect TOFU accept (which would be a MITM opportunity).
+  addons_repo_known_hosts: "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+
+  # fs_storage/fs_attachment/fs_attachment_s3 (mandatory - see
+  # tasks/_resolve-plan-spec.yml - every tenant's S3 filestore backend) come
+  # from OCA's own public storage repo, cloned by a SECOND, independent
+  # `clone-oca-storage` initContainer (plain HTTPS, no deploy key needed -
+  # the repo is public) into a second addons_path entry. Pinned to a literal
+  # SHA, not a branch, from day one (unlike addons_repo_ref above) - this is
+  # the production pattern that one is still bootstrapping toward: verified
+  # live via `git ls-remote https://github.com/OCA/storage.git
+  # refs/heads/19.0` on 2026-08-04. Bump deliberately; never point this at a
+  # floating branch.
+  oca_storage_repo_url: "https://github.com/OCA/storage.git"
+  oca_storage_repo_ref: "af1a3beeb324082e457bb168d20d13704f5df323"
 
   # Integrity guards for odoo_action=backup (templates/job-backup.yaml.j2) -
   # `sh` is dash, which has no `pipefail`, so `pg_dump | gzip > file` used to
@@ -139,24 +186,23 @@ odoo:
   # repo's deploy-databases role for the fix this one is ported from.
   backup:
     min_dump_bytes: 1024
-    # A legitimate empty-filestore tenant's tar.gz is ~110 bytes (tar's
-    # trailing null blocks survive gzip); a totally empty/failed gzip stream
-    # is 20 bytes. This floor only needs to sit between the two.
-    min_filestore_bytes: 64
 
 # odoo_action=check-snapshot-freshness (tasks/check-snapshot-freshness.yml) -
 # how stale a tenant's newest daily snapshot may be before the check fails
 # (surfaced as an AWX Job failure -> the notification_templates_error wired
-# in roles/configure-awx). One nightly cycle plus slack.
+# on the manually-configured `odoo-tenant` Job Template - see README "AWX").
+# One nightly cycle plus slack.
 #
 # max_age_hours only proves a snapshot is RECENT, not that it is VALID - a
 # ~20-byte empty dump from the pipefail bug above would still pass this
-# check. min_dump_bytes/min_filestore_bytes close that blind spot by having
-# the freshness Job also assert object size (rclone lsl), not just recency.
+# check. min_dump_bytes closes that blind spot by having the freshness Job
+# also assert object size (rclone lsl), not just recency. Filestore is no
+# longer part of this snapshot at all (see odoo.filestore_bucket) - its
+# durability is the platform MinIO's own concern (bucket versioning/
+# replication), not this role's.
 snapshot_freshness:
   max_age_hours: 30
   min_dump_bytes: 1024
-  min_filestore_bytes: 64
 
 # Shared Postgres sizing (ONE StatefulSet for the whole tier - not a plan_*
 # concern; see pg_topology above).
@@ -167,13 +213,18 @@ postgres:
   mem_request: "1Gi"
   mem_limit: "4Gi"
   max_connections: 200
-  # Node-pinned DELIBERATELY (its PVC is local-path, single-node today) -
-  # see README "Before adding node 2". Empty = scheduler's free choice on a
-  # single-node cluster; set nodeSelector/affinity once a real node name is
-  # known and node count > 1 is on the table.
+  # Node-pinned DELIBERATELY (its PVC is local-path, node-pinned) - see
+  # README "Migrating platform singletons to node 2". Empty = scheduler's
+  # free choice; moving this to a real node requires the guarded snapshot/
+  # restore runbook there, NOT just setting this - flipping it alone
+  # strands the pod Pending against a PV that can't follow it.
   node_selector: {}
 
-# PgBouncer (transaction-mode pooling in front of the shared Postgres).
+# PgBouncer (transaction-mode pooling in front of the shared Postgres) - no
+# PVC at all (its state, tenants.ini, is externalized to a ConfigMap - see
+# tasks/_sync-pgbouncer-tenants.yml), so unlike postgres.node_selector above,
+# changing this and redeploying is genuinely all it takes to move it - no
+# data to strand, see README "Migrating platform singletons to node 2".
 pgbouncer:
   default_pool_size: 5
   max_client_conn: 2000
@@ -181,6 +232,7 @@ pgbouncer:
   cpu_limit: "500m"
   mem_request: "64Mi"
   mem_limit: "256Mi"
+  node_selector: {}
 
 # Redis (mandatory Odoo session backend - no filesystem fallback). Verified
 # against camptocamp/odoo-cloud-platform's session_redis addon, 19.0 branch
@@ -200,6 +252,12 @@ redis:
   mem_limit: "256Mi"
   maxmemory: "192mb"
   maxmemory_policy: "allkeys-lru"
+  # Node-pinned (its PVC is local-path) like postgres.node_selector, but
+  # LOWER stakes if moved carelessly: losing this data only forces every
+  # tenant to log in again (session cache, not tenant data) - see README
+  # "Migrating platform singletons to node 2" for why this one does NOT
+  # need the guarded snapshot/restore treatment Postgres does.
+  node_selector: {}
 
 # The stock Docker Hub `odoo` image does NOT include the `redis` Python
 # package that session_redis's http.py needs (`import redis`) - without it,
@@ -239,7 +297,7 @@ k3s_containerd_socket: /run/k3s/containerd/containerd.sock
 nerdctl_namespace: k8s.io
 
 # Namespace ResourceQuota - a guardrail against Job pileups (batch-low Jobs
-# are the main risk: init/fixup/restore/backup/sync-addons all land here).
+# are the main risk: init/fixup/restore/backup all land here).
 resourcequota:
   pods: "200"
   requests_cpu: "16"
@@ -247,8 +305,8 @@ resourcequota:
   limits_cpu: "32"
   limits_memory: "64Gi"
 
-# PriorityClass for every Job this role creates (init/fixup/restore/backup/
-# sync-addons) - negative so they never preempt pool workloads, and
+# PriorityClass for every Job this role creates (init/fixup/restore/backup) -
+# negative so they never preempt pool workloads, and
 # preemptionPolicy Never so a pending batch-low Job never preempts anything
 # else while it waits either.
 priorityclass:
@@ -267,4 +325,4 @@ versions:
   postgres_exporter: "v0.16.0"    # quay.io/prometheuscommunity/postgres-exporter
   busybox: "1.38.0"               # suspend-backend + config-merge initContainers
   rclone: "1.74.3"                # restore/backup Jobs -> platform MinIO
-  git: "2.47.1"                   # sync-addons Job
+  git: "2.47.1"                   # clone-addons initContainers

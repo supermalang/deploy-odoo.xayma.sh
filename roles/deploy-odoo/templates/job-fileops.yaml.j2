@@ -1,13 +1,16 @@
 #jinja2: lstrip_blocks: True
 ---
-# Generic one-off filesystem operation against the shared filestore/addons
-# PVCs - delete-tenant.yml's directory cleanup, _assert-init-modules.yml's
-# existence check. Mounted READ-WRITE (unlike every other consumer, which
-# mounts addons read-only) since some callers need to write. Required vars:
-# `_fileops_name` (Job name), `_fileops_command` (a shell -c string).
-# Optional: `_fileops_image` (default busybox) - _assert-init-modules.yml
-# overrides this to the real odoo image so its check can see Odoo's own
-# bundled addons paths too, not just the PVC this Job otherwise only needs.
+# Generic one-off operation Job - currently only _assert-init-modules.yml's
+# module-existence check (delete-tenant.yml used to also use this for a
+# filestore rm-rf, before filestore moved to S3 - see job-purge-filestore.yaml.j2
+# for its replacement). Required vars: `_fileops_name` (Job name),
+# `_fileops_command` (a shell -c string). Optional: `_fileops_image`
+# (default busybox) - _assert-init-modules.yml overrides this to the real
+# odoo image so its check can see Odoo's own bundled addons paths too, not
+# just the freshly cloned repos this Job otherwise only needs;
+# `_fileops_clone_addons` (default false) - set true to get `/addons` and
+# `/oca-addons` directories populated by the same clone-addons/
+# clone-oca-storage initContainers pool-deployments.yaml.j2 uses.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -24,16 +27,59 @@ spec:
     spec:
       restartPolicy: Never
       priorityClassName: {{ priorityclass.name }}
+{% if _fileops_clone_addons | default(false) %}
+      initContainers:
+        - name: clone-addons
+          image: alpine/git:{{ versions.git }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519"
+              git clone {{ odoo.addons_repo_url }} /addons;
+              cd /addons;
+              git checkout {{ odoo.addons_repo_ref }}
+          volumeMounts:
+            - {name: addons-deploy-key, mountPath: /keys, readOnly: true}
+            - {name: addons, mountPath: /addons}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+        - name: clone-oca-storage
+          image: alpine/git:{{ versions.git }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              git clone {{ odoo.oca_storage_repo_url }} /oca-addons;
+              cd /oca-addons;
+              git checkout {{ odoo.oca_storage_repo_ref }}
+          volumeMounts:
+            - {name: oca-addons, mountPath: /oca-addons}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+{% endif %}
       containers:
         - name: fileops
           image: "{{ _fileops_image | default('busybox:' ~ versions.busybox) }}"
           command: ["sh", "-c", {{ _fileops_command | to_json }}]
+{% if _fileops_clone_addons | default(false) %}
           volumeMounts:
-            - {name: filestore, mountPath: /filestore}
             - {name: addons, mountPath: /addons}
+            - {name: oca-addons, mountPath: /oca-addons}
+{% endif %}
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 200m, memory: 128Mi}
+{% if _fileops_clone_addons | default(false) %}
       volumes:
-        - {name: filestore, persistentVolumeClaim: {claimName: odoo-filestore}}
-        - {name: addons, persistentVolumeClaim: {claimName: odoo-addons}}
+        - {name: addons, emptyDir: {}}
+        - {name: oca-addons, emptyDir: {}}
+        - name: addons-deploy-key
+          secret:
+            secretName: "{{ addons_deploy_key_secret_name }}"
+            defaultMode: 0400
+{% endif %}

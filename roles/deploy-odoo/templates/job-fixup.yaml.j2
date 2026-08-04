@@ -22,6 +22,43 @@ spec:
       restartPolicy: Never
       priorityClassName: {{ priorityclass.name }}
       initContainers:
+        # No shared PVC - see pool-deployments.yaml.j2's clone-addons for the
+        # rationale; this Job needs the same addons content the pool it's
+        # fixing up will run with.
+        - name: clone-addons
+          image: alpine/git:{{ versions.git }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519"
+              git clone {{ odoo.addons_repo_url }} /addons;
+              cd /addons;
+              git checkout {{ odoo.addons_repo_ref }}
+          volumeMounts:
+            - {name: addons-deploy-key, mountPath: /keys, readOnly: true}
+            - {name: addons, mountPath: /addons}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+        # Separate, independent clone from OCA's PUBLIC storage repo - see
+        # pool-deployments.yaml.j2's identical clone-oca-storage.
+        - name: clone-oca-storage
+          image: alpine/git:{{ versions.git }}
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              git clone {{ odoo.oca_storage_repo_url }} /oca-addons;
+              cd /oca-addons;
+              git checkout {{ odoo.oca_storage_repo_ref }}
+          volumeMounts:
+            - {name: oca-addons, mountPath: /oca-addons}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
         - name: render-config
           image: busybox:{{ versions.busybox }}
           command:
@@ -73,6 +110,32 @@ spec:
               })
               env['ir.config_parameter'].set_param('database.uuid', str(uuid.uuid4()))
               env['ir.config_parameter'].set_param('web.base.url', "https://{{ default_domain }}")
+              # fs_attachment_s3 (mandatory - see tasks/_resolve-plan-spec.yml):
+              # one fs.storage record, upserted by its fixed `code` so this
+              # stays idempotent across every deploy. {db_name} is a literal
+              # fs_storage placeholder (NOT Jinja) it substitutes itself -
+              # this tenant's own database name, so every tenant safely
+              # shares the one odoo.filestore_bucket without colliding.
+              # ir_attachment.location=db is the OCA-documented workaround
+              # for the one gotcha: attachments created earlier in the same
+              # transaction fs_attachment itself loads in (e.g. install-time
+              # icons) still follow this param, not the fs.storage record -
+              # 'db' keeps them durable instead of landing on this pod's
+              # now-ephemeral filesystem.
+              env['ir.config_parameter'].set_param('ir_attachment.location', 'db')
+              fs_storage_vals = {
+                  'name': 'MinIO filestore',
+                  'code': 'filestore',
+                  'protocol': 's3',
+                  'options': '{"key": "{{ odoo.filestore_access_key }}", "secret": "$FILESTORE_SECRET_KEY", "endpoint_url": "{{ odoo.filestore_endpoint }}"}',
+                  'directory_path': '{{ odoo.filestore_bucket }}/{db_name}',
+                  'use_as_default_for_attachments': True,
+              }
+              fs_storage = env['fs.storage'].search([('code', '=', 'filestore')], limit=1)
+              if fs_storage:
+                  fs_storage.write(fs_storage_vals)
+              else:
+                  env['fs.storage'].create(fs_storage_vals)
               env.cr.commit()
               PYEOF
           env:
@@ -81,15 +144,26 @@ spec:
                 secretKeyRef:
                   name: "{{ tenant_name }}"
                   key: ADMIN_PASSWD
+            - name: FILESTORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: "{{ filestore_secret_name }}"
+                  key: FILESTORE_SECRET_KEY
           volumeMounts:
             - {name: etc-odoo, mountPath: /etc/odoo}
             - {name: filestore, mountPath: /var/lib/odoo}
             - {name: addons, mountPath: /opt/extra-addons, readOnly: true}
+            - {name: oca-addons, mountPath: /opt/oca-addons, readOnly: true}
           resources:
             requests: {cpu: 250m, memory: 512Mi}
             limits: {cpu: "1", memory: 1Gi}
       volumes:
         - {name: config, configMap: {name: "{{ pool_config_name }}"}}
         - {name: etc-odoo, emptyDir: {}}
-        - {name: filestore, persistentVolumeClaim: {claimName: odoo-filestore}}
-        - {name: addons, persistentVolumeClaim: {claimName: odoo-addons}}
+        - {name: filestore, emptyDir: {}}
+        - {name: addons, emptyDir: {}}
+        - {name: oca-addons, emptyDir: {}}
+        - name: addons-deploy-key
+          secret:
+            secretName: "{{ addons_deploy_key_secret_name }}"
+            defaultMode: 0400

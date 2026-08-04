@@ -12,8 +12,9 @@
 # pipefail bug (see 01-deploy-odoo-defaults.yml's odoo.backup comment) would
 # still be "fresh" by this check's original definition. So this also stats
 # every recent object under each tenant's `daily/` prefix (`rclone lsl`, not
-# `lsf` - it reports size) and fails if a db.sql.gz/filestore.tar.gz found
-# there is under snapshot_freshness.min_dump_bytes/min_filestore_bytes.
+# `lsf` - it reports size) and fails if the db.sql.gz found there is under
+# snapshot_freshness.min_dump_bytes. Filestore is not part of this snapshot
+# at all (see job-backup.yaml.j2) - nothing to check here for it.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -56,11 +57,6 @@ spec:
                     */db.sql.gz)
                       if [ "$size" -lt {{ snapshot_freshness.min_dump_bytes }} ]; then
                         bad="$bad db.sql.gz(${size}B)"
-                      fi
-                      ;;
-                    */filestore.tar.gz)
-                      if [ "$size" -lt {{ snapshot_freshness.min_filestore_bytes }} ]; then
-                        bad="$bad filestore.tar.gz(${size}B)"
                       fi
                       ;;
                   esac

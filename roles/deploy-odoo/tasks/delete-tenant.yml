@@ -1,8 +1,8 @@
 ---
 # Final adhoc backup -> DROP DATABASE -> remove the tenant's PgBouncer entry
-# -> delete filestore dir -> delete every labelled tenant object -> if that
-# was the pool's last tenant, scale the pool to 0 (its objects are NEVER
-# deleted - see README).
+# -> purge the tenant's filestore prefix from MinIO -> delete every labelled
+# tenant object -> if that was the pool's last tenant, scale the pool to 0
+# (its objects are NEVER deleted - see README).
 - name: Recover this tenant's current pool/state from live cluster facts
   ansible.builtin.import_tasks: _recover-tenant.yml
 - name: Resolve the shared Postgres connection facts
@@ -45,16 +45,12 @@
     name: "{{ instance_slug }}"
     state: absent
 
-- name: "Delete the tenant's filestore directory [{{ tenant_name }}]"
+- name: "Purge the tenant's filestore prefix from the odoo-filestore bucket [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
     namespace: "{{ xayma_namespace }}"
-    template: job-fileops.yaml.j2
-  vars:
-    _fileops_name: "delete-filestore-{{ instance_slug }}"
-    _fileops_command: >-
-      rm -rf "/filestore/{{ instance_slug }}"
+    template: job-purge-filestore.yaml.j2
 
 - name: "Delete all labelled resources for this tenant [{{ tenant_name }}]"
   kubernetes.core.k8s:

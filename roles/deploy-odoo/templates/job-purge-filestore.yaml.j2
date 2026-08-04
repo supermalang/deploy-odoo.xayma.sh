@@ -1,0 +1,43 @@
+#jinja2: lstrip_blocks: True
+---
+# delete-tenant.yml's filestore cleanup - purges this tenant's own prefix
+# from the platform MinIO's odoo-filestore bucket (fs_attachment_s3's
+# directory_path is `{{ '{{ odoo.filestore_bucket }}' }}/{db_name}`, and
+# db_name == instance_slug - see job-fixup.yaml.j2). Dropping the tenant's
+# Postgres database does NOT touch this - S3 objects are independent of
+# Postgres and would otherwise leak forever.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: purge-filestore-{{ instance_slug }}
+  namespace: {{ xayma_namespace }}
+  labels: {{ tenant_labels | combine({'xayma.sh/job-role': 'fileops'}) | to_json }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {{ tenant_labels | combine({'xayma.sh/job-role': 'fileops'}) | to_json }}
+    spec:
+      restartPolicy: Never
+      priorityClassName: {{ priorityclass.name }}
+      containers:
+        - name: rclone-purge
+          image: rclone/rclone:{{ versions.rclone }}
+          command:
+            - /bin/sh
+            - -c
+            - >-
+              set -eu;
+              rclone purge filestore:{{ odoo.filestore_bucket }}/{{ instance_slug }}/ || true
+          env:
+            - {name: RCLONE_CONFIG_FILESTORE_TYPE, value: s3}
+            - {name: RCLONE_CONFIG_FILESTORE_PROVIDER, value: Other}
+            - {name: RCLONE_CONFIG_FILESTORE_ENDPOINT, value: {{ odoo.filestore_endpoint | to_json }}}
+            - {name: RCLONE_CONFIG_FILESTORE_ACL, value: private}
+          envFrom:
+            - secretRef: {name: "{{ filestore_secret_name }}"}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 128Mi}

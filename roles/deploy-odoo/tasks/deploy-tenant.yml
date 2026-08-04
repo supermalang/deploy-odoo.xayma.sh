@@ -126,7 +126,7 @@
     _pgb_override_slug: "{{ instance_slug }}"
     _pgb_override_cap: "{{ tenant_spec.tenant_db_max_connections }}"
 
-- name: Assert the tenant's init_modules exist on the addons PVC
+- name: Assert the tenant's init_modules exist in the addons repo
   ansible.builtin.import_tasks: _assert-init-modules.yml
   when: _deploy_needs_init | bool
 

@@ -1,8 +1,8 @@
 #jinja2: lstrip_blocks: True
 ---
 # Cluster-scoped (applied without a `namespace:` task param). Negative value
-# so every Job this role creates (init/fixup/restore/backup/sync-addons/
-# fileops) never preempts pool workloads; preemptionPolicy Never so a
+# so every Job this role creates (init/fixup/restore/backup/fileops) never
+# preempts pool workloads; preemptionPolicy Never so a
 # PENDING batch-low Job never preempts anything else while it waits either -
 # a Job pileup should queue, not fight the cluster for room.
 apiVersion: scheduling.k8s.io/v1
@@ -15,4 +15,4 @@ metadata:
 value: {{ priorityclass.value }}
 preemptionPolicy: Never
 globalDefault: false
-description: "Batch Jobs for the Odoo tier (init/fixup/restore/backup/sync-addons/fileops) - never preempt, never starve waiting."
+description: "Batch Jobs for the Odoo tier (init/fixup/restore/backup/fileops) - never preempt, never starve waiting."

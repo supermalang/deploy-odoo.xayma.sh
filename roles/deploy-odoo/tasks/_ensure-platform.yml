@@ -181,12 +181,21 @@
     template: minio-secret.yaml.j2
   no_log: true
 
-- name: Apply the shared filestore + addons PVCs
+- name: Apply the addons deploy-key Secret
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
     namespace: "{{ xayma_namespace }}"
-    template: pvcs.yaml.j2
+    template: addons-deploy-key-secret.yaml.j2
+  no_log: true
+
+- name: Apply the filestore S3 credentials Secret
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    namespace: "{{ xayma_namespace }}"
+    template: filestore-secret.yaml.j2
+  no_log: true
 
 # Shared, namespace-wide suspend/stop/error backend (was per-customer in the
 # slice model - one namespace now, so one backend). The ConfigMap's data

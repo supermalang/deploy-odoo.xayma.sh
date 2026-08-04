@@ -16,8 +16,6 @@ collections:
     version: ">=8.0.0"
   - name: community.postgresql
     version: ">=3.0.0"
-  - name: awx.awx
-    version: ">=24.0.0"
 
 # No collection needed for odoo_image_build.enabled (see
 # defaults/main/01-deploy-odoo-defaults.yml + tasks/_ensure-odoo-image.yml) -

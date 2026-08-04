@@ -1,9 +1,10 @@
 ---
-# Single-tenant pg_dump + filestore tar -> MinIO. Designed to be driven by
+# Single-tenant pg_dump -> MinIO (DB only - see job-backup.yaml.j2 for why
+# filestore isn't part of this). Designed to be driven by
 # an AWX schedule the calling app loops per active tenant (see README "AWX"
 # - AWX Schedules bind to one Job Template with fixed extra_vars, so
-# multi-tenant iteration is app-driven, not something this role or
-# configure-awx codifies per tenant).
+# multi-tenant iteration is app-driven, not something this role or the
+# manually-configured Job Template codifies per tenant).
 - name: Recover this tenant's current pool/state from live cluster facts
   ansible.builtin.import_tasks: _recover-tenant.yml
 

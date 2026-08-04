@@ -1,11 +1,17 @@
 #jinja2: lstrip_blocks: True
 ---
-# Single-tenant pg_dump + filestore tar -> MinIO
+# Single-tenant pg_dump -> MinIO
 # snapshots/{customer}/{instance}/{{ '{_backup_kind}' }}/{timestamp}/ - the
 # same layout job-restore.yaml.j2 expects. Designed to be driven by an AWX
 # schedule (app-driven loop over tenants - see README "AWX"). `_backup_kind`
 # (daily|adhoc) is set by the caller (backup-tenant.yml or delete-tenant.yml's
 # final safety backup) - see tasks/_run-tenant-backup.yml.
+#
+# DB-only, deliberately - filestore moved to the platform MinIO's
+# odoo-filestore bucket directly (fs_attachment_s3, see job-fixup.yaml.j2),
+# a live, already-durable store this Job has no reason to also snapshot.
+# Its own durability (versioning/replication) is the platform MinIO's
+# concern, not this role's - see README "Known caveats".
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -55,36 +61,6 @@ spec:
           resources:
             requests: {cpu: 100m, memory: 256Mi}
             limits: {cpu: 500m, memory: 512Mi}
-        # No pipe here (tar writes the gzip itself), so this was never
-        # subject to the pipefail bug above - `set -eu` already fails the
-        # container on a real tar error. Still floored on size: a genuinely
-        # empty filestore's tar.gz is ~110B (tar's null trailer survives
-        # gzip), so odoo.backup.min_filestore_bytes only needs to catch a
-        # totally-empty/truncated archive (~20B), not flag real-but-empty
-        # tenants as failures.
-        - name: filestore-tar
-          image: busybox:{{ versions.busybox }}
-          command:
-            - sh
-            - -c
-            - |-
-              set -eu
-              mkdir -p /filestore/{{ instance_slug }}
-              out=/backup/filestore.tar.gz
-              tar czf "$out" -C /filestore/{{ instance_slug }} .
-              size=$(stat -c %s "$out")
-              if [ "$size" -lt {{ odoo.backup.min_filestore_bytes }} ]; then
-                echo "FATAL: filestore archive is ${size}B, under the {{ odoo.backup.min_filestore_bytes }}B floor - treating as failed" >&2
-                rm -f "$out"
-                exit 1
-              fi
-              echo "filestore archive OK: $out (${size}B)"
-          volumeMounts:
-            - {name: filestore, mountPath: /filestore}
-            - {name: backup, mountPath: /backup}
-          resources:
-            requests: {cpu: 50m, memory: 128Mi}
-            limits: {cpu: 200m, memory: 256Mi}
       containers:
         - name: rclone-upload
           image: rclone/rclone:{{ versions.rclone }}
@@ -109,6 +85,3 @@ spec:
             limits: {cpu: 500m, memory: 256Mi}
       volumes:
         - {name: backup, emptyDir: {}}
-        - name: filestore
-          persistentVolumeClaim:
-            claimName: odoo-filestore

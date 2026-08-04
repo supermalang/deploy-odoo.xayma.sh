@@ -5,10 +5,7 @@
 # extra_vars, not --tags - see README.md "Actions"). Named `odoo_action`
 # rather than `action` because `action` is an Ansible reserved variable name.
 #
-# Three actions are NOT tenant-scoped - they carry no customer/instancename:
-#   sync-addons  - namespace/pool-scoped (git pull onto the shared addons
-#                  PVC); dispatches immediately, before every other assert -
-#                  it needs no vault secrets or plan either.
+# Two actions are NOT tenant-scoped - they carry no customer/instancename:
 #   apply-plan   - pool-scoped (reconciles an existing pool's frozen sizing -
 #                  see README "Plan resolution"); skips the tenant identity
 #                  assert but still needs `version`+`plan` and the vault/
@@ -31,15 +28,11 @@
     that: odoo_action is defined and odoo_action in [
             'deploy', 'start', 'stop', 'suspend', 'restart', 'edit-domain',
             'change-plan', 'apply-plan', 'change-version', 'delete',
-            'restore', 'backup', 'sync-addons', 'check-snapshot-freshness']
+            'restore', 'backup', 'check-snapshot-freshness']
     fail_msg: >-
       Set -e odoo_action=<one of: deploy|start|stop|suspend|restart|
       edit-domain|change-plan|apply-plan|change-version|delete|restore|
-      backup|sync-addons|check-snapshot-freshness>
-
-- name: Run odoo_action=sync-addons
-  ansible.builtin.import_tasks: sync-addons.yml
-  when: odoo_action == 'sync-addons'
+      backup|check-snapshot-freshness>
 
 - name: Run odoo_action=check-snapshot-freshness
   ansible.builtin.import_tasks: check-snapshot-freshness.yml
@@ -47,11 +40,10 @@
 
 - name: Assert tenant identity vars are set
   ansible.builtin.import_tasks: _assert-identity.yml
-  when: odoo_action not in ['sync-addons', 'apply-plan', 'check-snapshot-freshness']
+  when: odoo_action not in ['apply-plan', 'check-snapshot-freshness']
 
 - name: Assert this role's own vault secrets are set
   ansible.builtin.import_tasks: _assert-vault.yml
-  when: odoo_action != 'sync-addons'
 
 # Required for odoo_action=deploy/change-plan/apply-plan only - every other
 # tenant-scoped action recovers its pool assignment from live state instead

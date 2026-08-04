@@ -1,6 +1,5 @@
 ---
-# Runs for every tenant-scoped action (see main.yml; sync-addons is
-# namespace-scoped and skips this entirely). Fails clearly on un-sluggable
+# Runs for every tenant-scoped action (see main.yml). Fails clearly on un-sluggable
 # input rather than letting the Kubernetes API reject a malformed resource
 # name deep into a multi-manifest apply.
 - name: Assert customer/instance identity slugify cleanly to valid k8s names

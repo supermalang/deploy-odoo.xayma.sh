@@ -45,6 +45,9 @@ spec:
     metadata:
       labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'redis'}) | to_json }}
     spec:
+{% if redis.node_selector %}
+      nodeSelector: {{ redis.node_selector | to_json }}
+{% endif %}
       containers:
         - name: redis
           image: redis:{{ versions.redis }}

@@ -80,6 +80,9 @@ spec:
     metadata:
       labels: {{ platform_base_labels | combine({'app.kubernetes.io/name': 'pgbouncer'}) | to_json }}
     spec:
+{% if pgbouncer.node_selector %}
+      nodeSelector: {{ pgbouncer.node_selector | to_json }}
+{% endif %}
       containers:
         - name: pgbouncer
           image: edoburu/pgbouncer:{{ versions.pgbouncer }}

@@ -2,11 +2,12 @@
 ---
 # ONE shared Postgres for the entire tier (pg_topology: shared - see
 # vars/main.yml's `pg_target` seam; per_version/per_pool are reserved for
-# later). Node-pinned DELIBERATELY (its PVC is local-path, single-node
-# today) - see README "Before adding node 2". `postgres.node_selector`
-# defaults to {} (scheduler's free choice); set it once a real node name is
-# known and a second node is on the table, so the StatefulSet's PVC binding
-# doesn't strand it on the wrong node.
+# later). Node-pinned DELIBERATELY (its PVC is local-path) - see README
+# "Migrating platform singletons to node 2". `postgres.node_selector`
+# defaults to {} (scheduler's free choice); moving it to a real node is a
+# guarded, data-moving runbook (snapshot every tenant, recreate fresh here,
+# restore every tenant), not just flipping this value - see the README
+# section above.
 apiVersion: v1
 kind: Secret
 metadata:
