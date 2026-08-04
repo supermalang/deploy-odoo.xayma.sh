@@ -75,6 +75,25 @@ Configuration
    module rather than deep inside a batch-low Job. (`fs_storage`/
    `fs_attachment`/`fs_attachment_s3` come from OCA's own public repo
    automatically — nothing to push for those.)
+
+   **This is a prerequisite of the first `deploy`, not something this role
+   can create — a brand-new, empty repo does not satisfy it.** Concretely,
+   before any pool is built:
+   1. `odoo.addons_repo_ref` must be an actual commit on `odoo.addons_repo_url`
+      — an empty repo (no commits, no branches at all) fails the clone with
+      `fatal: couldn't find remote ref <ref>`, not something more obviously
+      "empty repo"-shaped. Push at least one commit to that ref before the
+      first `deploy` against any pool.
+   2. That tree must include `session_redis`, vendored from
+      `camptocamp/odoo-cloud-platform`'s `19.0` branch — the same source
+      `defaults/main/01-deploy-odoo-defaults.yml`'s `session_redis` comment
+      cites for the Redis session config this role depends on.
+
+   `_assert-addons-repo.yml` (run from `_resolve-pool.yml`, before a new
+   pool's Deployments are applied — see "Actions") checks both of these
+   in-cluster and fails with the repo, the ref, and the fix named, rather
+   than leaving every pool pod to crash-loop on `clone-addons` with no
+   clear signal anywhere in Ansible's own output.
 4. **Odoo image with `redis` installed** — see "Custom Odoo image".
 5. **A Job Template pointing at this playbook is mandatory** — the Xayma
    app's only launch target is one AWX Job Template running `site.yml`
