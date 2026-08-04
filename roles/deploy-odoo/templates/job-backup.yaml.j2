@@ -9,14 +9,13 @@
 #
 # DB-only, deliberately - filestore moved to the platform MinIO's
 # odoo-filestore bucket directly (fs_attachment_s3, see job-fixup.yaml.j2).
-# This Job does NOT also snapshot it, and unlike the name "backup" might
-# imply, that means filestore currently has NO backup of any kind - the
-# platform MinIO has no bucket versioning/replication configured (verified
-# against install-platform.xayma.sh's deploy-minio role: mode: standalone,
-# replicas: 1), so a deleted/overwritten attachment is unrecoverable, not
-# just un-rollback-able to a point in time. See README "Backups & Restore"
-# for the full exposure and what closes it (platform-side: enable bucket
-# versioning on odoo-filestore).
+# This Job does NOT also snapshot it - unlike the name "backup" might
+# imply, filestore's recovery mechanism is bucket versioning
+# (install-platform.xayma.sh's deploy-minio role, 30-day noncurrent-version
+# expiry), not a copy this role manages. That's logical-loss protection
+# only (same single-node, local-path-backed MinIO holds every version) and
+# isn't covered by xayma.backup_offsite_enabled (deploy-databases' dump
+# export only) - see README "Backups & Restore" for the full picture.
 apiVersion: batch/v1
 kind: Job
 metadata:

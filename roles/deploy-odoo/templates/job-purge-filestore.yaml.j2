@@ -6,6 +6,20 @@
 # db_name == instance_slug - see job-fixup.yaml.j2). Dropping the tenant's
 # Postgres database does NOT touch this - S3 objects are independent of
 # Postgres and would otherwise leak forever.
+#
+# `rclone purge` on this bucket does NOT erase data immediately - bucket
+# versioning is enabled on `odoo-filestore` (install-platform.xayma.sh's
+# deploy-minio role), so this writes a delete marker and the prior content
+# stays recoverable for 30 days (that role's noncurrent-version expiry)
+# before it's actually gone. That's deliberate platform policy, not an
+# oversight here - see README "Backups & Restore"/"Actions". If tenant
+# deletion ever needs to erase immediately instead (e.g. a contractual/
+# GDPR erasure request that can't wait out the grace window), that's a
+# deliberate policy change, not a one-line fix: it means force-deleting
+# every version under this prefix (e.g. `mc rm --recursive --versions
+# --force`, verified against a real versioned bucket to actually remove
+# delete markers too, not just `rclone purge`), and it should be its own
+# explicit action/flag, not a silent change to what `delete` does today.
 apiVersion: batch/v1
 kind: Job
 metadata:

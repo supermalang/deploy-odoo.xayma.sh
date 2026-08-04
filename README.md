@@ -257,7 +257,7 @@ Actions
 | `change-plan` | tenant | Move a tenant to a different plan, same Odoo version only. No data movement |
 | `apply-plan` | **pool** | Resize an existing pool's frozen sizing — affects every tenant on it |
 | `change-version` | tenant | Stub — fails fast, see "Non-goals" |
-| `delete` | tenant | Adhoc backup, drop the DB, purge the filestore prefix + PgBouncer entry, delete every labelled object; scales the pool to 0 if it was the last tenant |
+| `delete` | tenant | Adhoc backup, drop the DB, purge the filestore prefix + PgBouncer entry, delete every labelled object; scales the pool to 0 if it was the last tenant. The DB drop is immediate; the filestore purge is **not** — see "Backups & Restore" for the 30-day recovery window this leaves |
 | `restore` | tenant | Restore a snapshot (DB only), fenced via REVOKE/terminate |
 | `backup` | tenant | On-demand `pg_dump` → MinIO (DB only) |
 | `check-snapshot-freshness` | **namespace** | Fails unless every live, non-stopped tenant has a `daily` snapshot newer than `snapshot_freshness.max_age_hours` — the backstop for a tenant whose `backup` silently stops being invoked |
@@ -438,17 +438,29 @@ no point-in-time filestore rollback. `check-snapshot-freshness` (default
 30h) independently verifies every live, non-stopped tenant actually has a
 recent DB snapshot.
 
-**Filestore currently has no backup of any kind, and this platform's
-MinIO cannot provide one on its own.** "No point-in-time rollback" (above)
-undersells the real exposure: `install-platform.xayma.sh`'s `deploy-minio`
-is `mode: standalone`, `replicas: 1`, with **no bucket versioning and no
-replication configured anywhere**. A user-deleted attachment or a bad
-prefix delete (e.g. a `delete` action's `job-purge-filestore.yaml.j2`
-firing against the wrong prefix) is **unrecoverable** — not "can't roll
-back to a point in time", but "gone, permanently, with nothing to restore
-from". Enabling bucket versioning on `odoo-filestore` is a platform-side
-change (`install-platform.xayma.sh`'s `deploy-minio` role) — out of scope
-for this repo, but load-bearing for the claim above to become true again.
+**Filestore's actual recovery mechanism is bucket versioning, not a
+backup.** `install-platform.xayma.sh`'s `deploy-minio` role enables
+versioning on `odoo-filestore` with a 30-day noncurrent-version expiry
+(`minio.filestore.versioning`/`noncurrent_expire_days`, applied as a
+bucket lifecycle rule). A deleted or overwritten attachment — including
+`delete`'s own `job-purge-filestore.yaml.j2` purging a tenant's prefix —
+writes a delete marker/new version rather than destroying the prior one,
+so it stays recoverable for 30 days before the lifecycle rule expires it
+for good. **This is deliberate platform policy, not this role's doing —
+`job-purge-filestore.yaml.j2` does not force-delete old versions**, so a
+tenant's attachments are recoverable for 30 days after `delete`, not gone
+immediately (see "Actions").
+
+That 30-day window is a **logical-loss** control only — it does not make
+filestore durable against **physical** loss. Every version (current and
+noncurrent alike) lives on the same single-node, `local-path`-backed
+MinIO (`mode: standalone`, `replicas: 1`) — a node/disk failure destroys
+all of it, current and historical, at once; versioning is not
+replication. And `xayma.backup_offsite_enabled` does **not** cover this
+bucket — it's scoped to `deploy-databases`' dump export only — so there
+is still no offsite copy of tenant attachments anywhere. If either of
+those matters for this platform's actual risk tolerance, that's a
+platform-side change (`install-platform.xayma.sh`), out of scope here.
 
 ### Migrating attachments off the old PVC
 

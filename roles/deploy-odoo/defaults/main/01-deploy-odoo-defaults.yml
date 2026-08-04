@@ -205,10 +205,10 @@ odoo:
 # check. min_dump_bytes closes that blind spot by having the freshness Job
 # also assert object size (rclone lsl), not just recency. Filestore is no
 # longer part of this snapshot at all (see odoo.filestore_bucket) and this
-# check says nothing about it either - the platform MinIO currently has no
-# bucket versioning/replication configured at all, so filestore has no
-# backup of any kind right now, not merely "unchecked by this action" -
-# see README "Backups & Restore".
+# check says nothing about it either - its recovery mechanism is the
+# platform MinIO's bucket versioning (30-day noncurrent-version expiry),
+# not a snapshot this check could verify freshness of - see README
+# "Backups & Restore".
 snapshot_freshness:
   max_age_hours: 30
   min_dump_bytes: 1024
