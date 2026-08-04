@@ -36,7 +36,16 @@ data:
     ; it only lets one worker hold more PG connections at once.
     db_maxconn = {{ pool_spec.db_maxconn }}
 
-    logfile = False
+    ; logfile deliberately absent, not "= False" - `logfile`'s real type is
+    ; `path` (my_default ''), not boolean (verified against Odoo 19's
+    ; odoo/tools/config.py: `--logfile` is `type='path', my_default=''`).
+    ; A config-file value of the literal string "False" is silently
+    ; SKIPPED for any non-boolean-action option (config.py's
+    ; _load_file_options, the exact "isn't a boolean option, skip" warning
+    ; live logs showed), falling back to my_default anyway - '', meaning
+    ; log to stdout, which is what this container actually wants
+    ; (`kubectl logs` is the only debugging surface here). Omitting the
+    ; key reaches the identical end state with no warning on every run.
     log_level = warn
 
     ; http_interface/http_port (NOT bare interface/port - Odoo doesn't
@@ -66,9 +75,15 @@ data:
     ; behavior is not.
     server_wide_modules = web,session_redis
 
-    timezone = Africa/Dakar
+    ; timezone/language are NOT odoo.conf options in Odoo 19 (verified
+    ; against odoo/tools/config.py's options_index directly - neither name
+    ; appears anywhere in it, confirming the live "unknown option" warnings
+    ; were accurate, not a fluke) - removed rather than replaced; there is
+    ; no config-file equivalent, timezone/language are per-company/per-user
+    ; DB settings now. load_language is a REAL, separate option
+    ; (`--load-language`, still recognized) and is kept - it is what
+    ; actually loads the fr_FR translations at DB init time.
     load_language = fr_FR
-    language = fr_FR
 
     ; workers/max_cron_threads are the {pool}-http shape here - {pool}-cron/
     ; {pool}-gevent override BOTH via CLI flags (see pool-deployments.yaml.j2).
@@ -84,11 +99,30 @@ data:
     limit_time_real = {{ pool_spec.limits.time_real }}
     limit_request = {{ pool_spec.limits.request }}
 
-    osv_memory_count_limit = False
-    osv_memory_age_limit = 1.0
+    ; osv_memory_count_limit's real type is int (--osv-memory-count-limit,
+    ; my_default=0, "By default there is no limit" - verified against
+    ; odoo/tools/config.py directly), not boolean - "False" was being
+    ; silently skipped (same mechanism as logfile above), falling back to
+    ; 0 anyway - "no limit" IS 0 here, so this is now explicit rather than
+    ; accidental. osv_memory_age_limit was RENAMED to transient_age_limit
+    ; (type float, my_default=1.0 - "Time limit ... records created with a
+    ; TransientModel ... are kept" - confirmed the exact same 1.0 default
+    ; this pool already wanted, just under the current name).
+    osv_memory_count_limit = 0
+    transient_age_limit = 1.0
 
     smtp_server = localhost
     email_from = "exemple@{{ platform_domain }}"
 
     test_enable = False
-    without_demo = all
+    ; without_demo's real type is a boolean CHECK (_check_without_demo,
+    ; which calls the same _check_bool every other bool option uses) - "all"
+    ; is not one of _check_bool's accepted literals ('1'/'yes'/'true'/'on'),
+    ; so this warned "invalid boolean value: 'all', assume True" on every
+    ; single process start (this file is read by every pool-http/-cron/
+    ; -gevent server start, not just job-init.yaml.j2's one-shot `-i`, even
+    ; though without_demo is only ever actually USED during an install).
+    ; "True" is accepted directly - same effective behavior (no demo data),
+    ; zero warnings. See job-init.yaml.j2's --without-demo CLI flag for the
+    ; identical fix on the one process where this setting is actually used.
+    without_demo = True

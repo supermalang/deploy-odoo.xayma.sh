@@ -128,16 +128,21 @@ spec:
           image: "{{ odoo_image_repo }}:{{ version }}.0"
           command: ["/bin/bash", "-c"]
           args:
+            # --without-demo=True, not =all - "all" isn't one of Odoo 19's
+            # accepted boolean literals (see pool-configmap.yaml.j2's
+            # without_demo comment for the full verification); it still
+            # worked (Odoo assumed True and logged a warning every time),
+            # but "True" gets the identical behavior with no warning.
             - |
               set -euo pipefail
               odoo -c /etc/odoo/odoo.conf -d {{ instance_slug }} \
                 -i base,fs_storage,fs_attachment,fs_attachment_s3 \
-                --without-demo=all --stop-after-init --no-http
+                --without-demo=True --stop-after-init --no-http
               odoo shell -c /etc/odoo/odoo.conf -d {{ instance_slug }} --no-http \
                 < /scripts/fs_storage_upsert.py
               odoo -c /etc/odoo/odoo.conf -d {{ instance_slug }} \
                 -i "{{ tenant_spec.init_modules }}" \
-                --without-demo=all --stop-after-init --no-http
+                --without-demo=True --stop-after-init --no-http
               odoo shell -c /etc/odoo/odoo.conf -d {{ instance_slug }} --no-http \
                 < /scripts/force_storage.py
           env:
