@@ -272,23 +272,47 @@ postgres:
   # platform.yaml.j2's `allow-to-pg` header comment for why cross-node
   # otherwise means default-deny-ingress blocks them outright.
   #
-  # DO NOT MERGE/DEPLOY THIS VALUE without both of the following holding on
-  # the target cluster - neither does, as of this comment:
-  #   1. install-platform.xayma.sh must have already labelled the
-  #      control-plane node `xayma.sh/node-role=platform` - only its
-  #      k3s-agent.yml labels a node today (workers, `tenants`), so right now
-  #      NO node carries `platform` and pg-0 would go Pending with no
-  #      explanatory event, not fail loudly.
-  #   2. same-node host->pod traffic must actually bypass kube-router's
-  #      per-pod chains (unverified - cross-node traffic provably does NOT,
-  #      that's this whole incident). If kube-router polices same-node
-  #      traffic too, this pin changes nothing and the NetworkPolicy fix
-  #      (`allowed_host_cidrs` below) or moving the SQL in-cluster
-  #      (_pg-exec.yml) are the only fixes that can work.
-  # This is CHEAP ONLY RIGHT NOW: pg-0 holds no tenant data yet, so applying
-  # this and letting the StatefulSet reschedule pg-0 costs nothing. The
-  # moment any tenant exists, applying this becomes the backup/restore
-  # runbook two paragraphs up, not a config change.
+  # Prerequisites, checked 2026-08-05:
+  #   1. The `xayma.sh/node-role=platform` label on the control-plane node -
+  #      install-platform.xayma.sh/roles/install-platform/tasks/
+  #      install-k3s.yml:139-146 (commit 459a6e3, landed 17:21 UTC that day)
+  #      already labels it unconditionally with --overwrite, imported on
+  #      EVERY run of that repo's site.yml, not just first install. The
+  #      label was simply absent live because that playbook hadn't been
+  #      re-run since the commit landed - a stale cluster, not a missing
+  #      task. Fix is `ansible-playbook site.yml --tags installk3s` in that
+  #      repo, not a code change here or there.
+  #   2. Same-node host->pod traffic bypassing kube-router's per-pod chains -
+  #      VERIFIED empirically 2026-08-05 (raw TCP connect from the control
+  #      node to a same-node pod IP succeeded; the equivalent cross-node
+  #      connect is this whole incident, and failed). Treat this as
+  #      confirmed-for-now, not proven-forever: the NetworkPolicy spec makes
+  #      no promise about node-local traffic - "same-node bypasses
+  #      enforcement" is kube-router's own implementation choice, unasserted
+  #      by any test in either repo. A kube-router version bump, a config
+  #      change, or a future CNI swap can silently re-break every
+  #      odoo_action that ends up depending on it, with no signal until it
+  #      does. That is why _pg-exec.yml (API-server exec, immune to both
+  #      this quirk and to placement) is this incident's stated DURABLE
+  #      direction, not this pin - this pin is the cheap unblock.
+  #
+  # Also a real trade, not a free move: this puts the TENANT tier's
+  # heaviest stateful workload back beside the control-plane's own services
+  # (AWX, SigNoz, the platform Postgres) - directly against the reason
+  # install-platform.xayma.sh's worker node exists at all (hardening item
+  # H4, that repo's CLAUDE.md: workers absorb tenant workloads so a runaway
+  # tenant can't starve them). It also adds a cross-node hop for every pool
+  # pod's Postgres traffic once pools run on the worker and pg doesn't -
+  # functionally fine (`allow-to-pg`'s podSelector entries already cover
+  # pod-to-pod traffic regardless of which node it crosses; that path is
+  # separately confirmed working - `nc -zv pg 5432` from pgbouncer-0
+  # succeeds), just no longer free of one.
+  #
+  # CHEAP ONLY IF pg-0 still holds no tenant data - true at its 17:00:33
+  # initdb, NOT reverified since. Check for live tenant databases before
+  # applying this and letting the StatefulSet reschedule pg-0; if any
+  # tenant has been deployed since, this is the backup/restore runbook two
+  # paragraphs up, not a plain reschedule.
   node_selector: {'xayma.sh/node-role': 'platform'}
   # `allow-to-pg` (templates/networkpolicies-platform.yaml.j2) admits every
   # in-cluster caller by pod/namespaceSelector, but community.postgresql's
