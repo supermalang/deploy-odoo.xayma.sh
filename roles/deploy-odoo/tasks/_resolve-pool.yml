@@ -80,6 +80,18 @@
     role_attr_flags: LOGIN
   no_log: true
 
+# Registered (not fire-and-forget) so its ACTUAL rendered content - not
+# pool_spec_hash, which only covers sizing (workers/replicas/pod resources/
+# limits/cron threads/db_maxconn), never the rest of odoo.conf
+# (addons_path, server_wide_modules, ...) - can drive the Deployments'
+# pod-template checksum annotation below. See that annotation's own
+# comment for why: this ConfigMap is mutable and DOES get reapplied on
+# every deploy whose pool_spec_hash still matches (i.e. every normal
+# deploy onto an existing pool, not just first creation - create-only
+# only kicks in on an actual MISMATCH), but nothing before this made the
+# running PODS pick up a changed file - confirmed live, three pool pods
+# stayed on a broken addons_path indefinitely after the ConfigMap itself
+# had already been corrected underneath them.
 - name: "Apply the pool's odoo.conf ConfigMap (pool-scoped - create-only) [{{ pool_id }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -87,6 +99,7 @@
     namespace: "{{ xayma_namespace }}"
     template: pool-configmap.yaml.j2
   when: _pool_apply_spec | bool
+  register: _pool_configmap_result
 
 # Fail fast on an unusable odoo.addons_repo_url/odoo.addons_repo_ref
 # BEFORE building any pod that depends on it - see _assert-addons-repo.yml.
@@ -103,6 +116,8 @@
     state: present
     namespace: "{{ xayma_namespace }}"
     template: pool-deployments.yaml.j2
+  vars:
+    pool_config_checksum: "{{ _pool_configmap_result.result.data['odoo.conf'] | hash('sha256') }}"
   when: _pool_apply_spec | bool
 
 - name: "Apply the {pool}-http HorizontalPodAutoscaler (pool-scoped - create-only) [{{ pool_id }}]"

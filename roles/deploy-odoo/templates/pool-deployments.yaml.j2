@@ -29,6 +29,24 @@ spec:
   template:
     metadata:
       labels: {{ pool_labels_http | to_json }}
+      # Rolls this Deployment whenever the pool's odoo.conf ConfigMap
+      # content actually changes - see _resolve-pool.yml's
+      # pool_config_checksum comment for why this is necessary at all:
+      # the ConfigMap is mounted only into the render-config
+      # initContainer, which sed's it into a separate emptyDir file ONCE
+      # at pod start and never runs again - a running pod has no other
+      # way to ever notice the file changed. This does NOT reopen the
+      # frozen-pool-spec question (pool_spec/pool_spec_hash - sizing -
+      # stays create-only, unaffected): it only makes sure that whenever
+      # the ConfigMap DOES get reapplied (every deploy whose
+      # pool_spec_hash still matches - see _resolve-pool.yml), the pods
+      # actually pick up what's now in it, instead of silently drifting
+      # from the file every future render-config initContainer would
+      # produce. A Deployment's pod-template annotation changing is what
+      # actually triggers the rollout - the object's own top-level
+      # annotations would not.
+      annotations:
+        xayma.sh/config-checksum: "{{ pool_config_checksum }}"
     spec:
       # podAntiAffinity stays PREFERRED (soft) - replicas spreading across
       # nodes labelled odoo.tenants_node_label is a nice-to-have, never worth
@@ -273,6 +291,10 @@ spec:
   template:
     metadata:
       labels: {{ pool_labels_cron | to_json }}
+      # Rolls this Deployment on an odoo.conf change - see {pool}-http's
+      # identical annotation above for why.
+      annotations:
+        xayma.sh/config-checksum: "{{ pool_config_checksum }}"
     spec:
 {% if odoo.tenants_node_label %}
       # REQUIRED (hard) - see {pool}-http's identical nodeAffinity above.
@@ -451,6 +473,10 @@ spec:
   template:
     metadata:
       labels: {{ pool_labels_gevent | to_json }}
+      # Rolls this Deployment on an odoo.conf change - see {pool}-http's
+      # identical annotation above for why.
+      annotations:
+        xayma.sh/config-checksum: "{{ pool_config_checksum }}"
     spec:
 {% if odoo.tenants_node_label %}
       # REQUIRED (hard) - see {pool}-http's identical nodeAffinity above.
