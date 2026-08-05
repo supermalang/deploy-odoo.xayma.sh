@@ -67,7 +67,28 @@ data:
     ; pool-deployments.yaml.j2 and 01-deploy-odoo-defaults.yml's
     ; odoo.oca_repos comment). Derived from that SAME list, not repeated
     ; here by hand - adding an OCA dependency there is enough.
-    addons_path = /opt/extra-addons{% for repo in odoo.oca_repos %},/opt/oca-{{ repo.name }}{% endfor %}
+    ;
+    ; The list is assembled in a "set" block ABOVE this line, not inline
+    ; on it. Ansible's Jinja environment runs with trim_blocks enabled
+    ; (hardcoded in ansible/_internal/_templating/_jinja_bits.py - NOT the
+    ; underlying Jinja library's own default), which eats the newline
+    ; immediately after any percent-brace block tag. A loop-closing tag
+    ; that used to sit at the END of this content line had its trailing
+    ; newline eaten the same way, so the NEXT line (this very comment) got
+    ; appended directly onto addons_path's value with no separator in
+    ; between: live-verified, an AWX job silently dropped the second OCA
+    ; path off the addons_path ConfigParser actually loaded
+    ; (inline_comment_prefixes defaults to None, so the appended comment
+    ; text became part of the VALUE, not a comment) - reopening the exact
+    ; server_environment failure a prior fix closed. Double-brace
+    ; expression tags are NOT affected by trim_blocks - only percent-brace
+    ; block tags are - so keep this line a plain expression, nothing else
+    ; on it, and do not "simplify" the loop back onto this line.
+{% set _oca_addons_paths = [] %}
+{% for repo in odoo.oca_repos %}
+{% set _ = _oca_addons_paths.append('/opt/oca-' + repo.name) %}
+{% endfor %}
+    addons_path = {{ (['/opt/extra-addons'] + _oca_addons_paths) | join(',') }}
     ; session_redis (MANDATORY - no filesystem fallback) is configured
     ; ENTIRELY via ODOO_SESSION_REDIS_* environment variables on the odoo
     ; process, not here - see pool-deployments.yaml.j2. Loading it via
