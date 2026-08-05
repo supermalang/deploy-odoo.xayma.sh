@@ -156,7 +156,23 @@ spec:
               if admin:
                   admin.password = os.environ['ADMIN_PASSWD']
               country = env['res.country'].search([('code', '=', 'SN')], limit=1)
-              currency = env['res.currency'].search([('name', '=', 'XOF')], limit=1)
+              # active_test=False - XOF ships with active="False" in Odoo's
+              # own base/data/res_currency_data.xml (only a handful of
+              # major currencies are pre-activated), so a plain search()
+              # here found nothing, `currency.id if currency else False`
+              # wrote a literal False, and res.company.currency_id is
+              # NOT NULL - confirmed live: "null value in column
+              # currency_id ... violates not-null constraint". Searching
+              # WITHOUT the implicit active-only filter finds the real
+              # (inactive) record so a genuine id gets written; Odoo's own
+              # res.company.write() (odoo/addons/base/models/res_company.py)
+              # already auto-flips vals['currency_id'] to active=True right
+              # before the super().write() call below - but only when
+              # vals.get('currency_id') is truthy, which a bare False never
+              # was. No such fix is needed for country_id - res.country
+              # doesn't define an `active` field at all, so it was never
+              # filtered.
+              currency = env['res.currency'].with_context(active_test=False).search([('name', '=', 'XOF')], limit=1)
               company = env.user.company_id
               company.write({
                   'name': "{{ customer }}",
