@@ -63,7 +63,7 @@
 #
 # community.postgresql's postgresql_user gave this create-or-update
 # idempotence for free; hand-rolled below as a DO block with an existence
-# check per role, since _pg-exec.yml is just `psql < query` - no built-in
+# check per role, since _pg-exec.yml is just `psql < pg_exec_query` - no built-in
 # idempotence of its own. Role names come from defaults/main (fixed config
 # constants) and passwords are hash('sha256') hex digests (vars/main.yml) -
 # never raw user input - so plain string interpolation into the SQL text is
@@ -71,7 +71,7 @@
 # that same closed set of values.
 - name: "Ensure the fixed platform PG roles exist"
   vars:
-    query: >-
+    pg_exec_query: >-
       {% for r in [{'name': pgadmin_ro_role, 'password': _pgadmin_ro_password},
                    {'name': backup_ro_role, 'password': _backup_ro_password},
                    {'name': pgbouncer_auth_role, 'password': _pgbouncer_auth_password},
@@ -92,7 +92,7 @@
 # creation above.
 - name: "Grant the fixed platform roles their scoped privileges"
   vars:
-    query: >-
+    pg_exec_query: >-
       GRANT pg_read_all_data TO {{ pgadmin_ro_role }};
       GRANT pg_read_all_data TO {{ backup_ro_role }};
       GRANT pg_monitor TO {{ pg_exporter_role }};
@@ -103,7 +103,7 @@
 # static userlist (no userlist edits when pool roles are created/rotated).
 - name: "Ensure the pgbouncer auth_query lookup function exists"
   vars:
-    query: >-
+    pg_exec_query: >-
       CREATE OR REPLACE FUNCTION public.pgbouncer_auth_lookup(uname text)
       RETURNS TABLE(usename name, passwd text) AS $$ SELECT usename, passwd
       FROM pg_shadow WHERE usename = uname; $$ LANGUAGE sql SECURITY DEFINER;
@@ -111,12 +111,12 @@
 
 - name: "Lock the lookup function down, then grant it to pgbouncer_auth only"
   vars:
-    query: "REVOKE ALL ON FUNCTION public.pgbouncer_auth_lookup(text) FROM PUBLIC;"
+    pg_exec_query: "REVOKE ALL ON FUNCTION public.pgbouncer_auth_lookup(text) FROM PUBLIC;"
   ansible.builtin.import_tasks: _pg-exec.yml
 
 - name: "Grant EXECUTE on the lookup function to pgbouncer_auth"
   vars:
-    query: "GRANT EXECUTE ON FUNCTION public.pgbouncer_auth_lookup(text) TO {{ pgbouncer_auth_role }};"
+    pg_exec_query: "GRANT EXECUTE ON FUNCTION public.pgbouncer_auth_lookup(text) TO {{ pgbouncer_auth_role }};"
   ansible.builtin.import_tasks: _pg-exec.yml
 
 # The tenants.ini ConfigMap is normally OWNED by tasks/_sync-pgbouncer-tenants.yml

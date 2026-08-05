@@ -5,12 +5,12 @@
 # kubelet -> container runtime), not a pod-to-pod path, so kube-router's
 # per-pod NetworkPolicy chains (see templates/networkpolicies-platform.yaml.j2's
 # `allow-to-pg`) never see it - this is what lets a host-network caller
-# reach pg-0 at all. Callers `import_tasks` this with `query` set to a
+# reach pg-0 at all. Callers `import_tasks` this with `pg_exec_query` set to a
 # single SQL string.
 #
 # community.postgresql's postgresql_user/_privs/_membership/_db modules give
 # each call site create-if-missing idempotence for free; this helper is just
-# `psql < query`, so `query` itself MUST be idempotent SQL (`DO $$ ... END
+# `psql < pg_exec_query`, so `pg_exec_query` itself MUST be idempotent SQL (`DO $$ ... END
 # $$;` with an existence check, `CREATE OR REPLACE`, `GRANT` /`REVOKE`
 # - both already no-ops on a repeat) - there's no equivalent safety net here.
 #
@@ -23,16 +23,16 @@
 # session, and allocating one that nothing reads from is how the previous
 # incident happened.
 #
-# `query` travels over the child process's stdin, never `argv` or a
-# ConfigMap/template - `command.argv` below never contains `query`, only
+# `pg_exec_query` travels over the child process's stdin, never `argv` or a
+# ConfigMap/template - `command.argv` below never contains `pg_exec_query`, only
 # psql's fixed flags, so nothing in it reaches kubectl's argv (visible to
 # anything reading /proc or `ps` on the control node), a pod log, or an
 # etcd object. That only protects the transport, though: callers passing a
-# password inside `query` must still set `no_log: true` on their own
+# password inside `pg_exec_query` must still set `no_log: true` on their own
 # import_tasks/task, exactly as every community.postgresql call site
 # already does - this task's OWN module args (`stdin`) would otherwise land
 # in the Ansible result/log unredacted like any other module's.
-- name: "Run SQL inside {{ pg_pod_name }} via the API server (bypasses pod-network NetworkPolicy)"
+- name: "Run SQL via the API server, bypassing pod-network NetworkPolicy, inside {{ pg_pod_name }}"
   ansible.builtin.command:
     argv:
       - kubectl
@@ -53,7 +53,7 @@
       - postgres
       - -d
       - postgres
-    stdin: "{{ query }}"
+    stdin: "{{ pg_exec_query }}"
   changed_when: false
 
 # No login_password/PGPASSWORD anywhere above - deliberate, not an
