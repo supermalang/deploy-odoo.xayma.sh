@@ -223,12 +223,23 @@ Input contract
 
 The calling app is the source of truth: a real launch sends `plan` **and**
 `plan_spec`. This role also keeps a small fallback catalog
-(`defaults/main/00-plans.yml` — `standard`/`premium`) consulted only when
-`plan_spec` is absent; a `plan` name matching neither the app's spec nor
-the catalog falls through to `plan_spec_hard_fallback`
-(`defaults/main/01-deploy-odoo-defaults.yml`) — deliberately tiny, a
-misconfiguration safety net, never a real tier. `plan` defaults to
-`"standard"` if omitted entirely (`xayma_odoo.plan`).
+(`defaults/main/00-plans.yml` — `minimal`/`standard`/`premium`) consulted
+only when `plan_spec` is absent; a `plan` name matching neither the app's
+spec nor the catalog falls through to `plan_spec_hard_fallback`
+(`defaults/main/01-deploy-odoo-defaults.yml`, literally `plans.minimal`) —
+deliberately tiny, a misconfiguration safety net, never a real
+commercial tier. `plan` defaults to `"standard"` if omitted entirely
+(`xayma_odoo.plan`).
+
+`minimal` plays a second role beyond being the fallback: every OTHER
+resolved plan_spec — including one sent entirely by the app, bypassing
+this catalog — has its per-field values clamped **up** to `minimal`'s
+floor wherever they'd otherwise be lower (`tasks/_clamp-plan-spec.yml`),
+and a couple of memory-specific invariants asserted (not clamped —
+they FAIL the play instead; see `tasks/_assert-plan-spec.yml`) that no
+single per-field floor could ever catch. A field that gets clamped is
+recorded on the pool's Deployments via the `xayma.sh/sizing-clamped`
+annotation, and a warning is logged.
 
 Resolved fresh on every call by `tasks/_resolve-plan-spec.yml`:
 
@@ -245,7 +256,7 @@ plan_spec (app-supplied, or plan_spec_json for manual runs)
 | `workers` | pool | `{pool}-http`'s Odoo `workers` (must be `>=2`) |
 | `replicas_min` / `replicas_max` | pool | HPA bounds for `{pool}-http` |
 | `pod.cpu_request` / `cpu_limit` / `mem_request` / `mem_limit` | pool | Applied to all 3 Deployments in the pool |
-| `limits.mem_soft` / `mem_hard` | pool | odoo.conf `limit_memory_soft`/`hard` (bytes) — kept below `pod.mem_limit` so Odoo self-recycles before Kubernetes OOMKills |
+| `limits.mem_soft` / `mem_hard` | pool | odoo.conf `limit_memory_soft`/`hard` (bytes). `mem_soft` (RSS-based) is kept below `pod.mem_limit` so Odoo self-recycles before Kubernetes OOMKills. `mem_hard` sets `RLIMIT_AS` (VIRTUAL address space, not RSS) — defaults to `0` (disabled) on every catalog plan; a small nonzero value is unsafe by construction (see `_assert-plan-spec.yml`), not just "smaller than ideal" |
 | `limits.time_cpu` / `time_real` / `request` | pool | odoo.conf `limit_time_cpu`/`limit_time_real`/`limit_request` |
 | `cron.threads` | pool | `{pool}-cron`'s `max_cron_threads` |
 | `db_maxconn` | pool | odoo.conf `db_maxconn` — worker-side connection demand (see below, don't confuse with the tenant cap) |
@@ -380,10 +391,11 @@ vs. worst-case HPA scale-out:
 | `standard` (default plan) | 512Mi | 3 × 512Mi = 1.5Gi | 6 × 512Mi = 3Gi |
 | `premium` | 1Gi | 4 × 1Gi = 4Gi | 8 × 1Gi = **8Gi** |
 
-`standard` is the default plan (`xayma_odoo.plan`) and the smallest real
-catalog entry. `plan_spec_hard_fallback` is smaller still (384Mi/pod,
-`replicas_max: 2`), but it's a misconfiguration safety net, not a normal
-sizing target.
+`standard` is the default plan (`xayma_odoo.plan`). `minimal` (384Mi/pod,
+`replicas_max: 2`) is smaller still, but — same as
+`plan_spec_hard_fallback`, which now just points at it — it's a
+misconfiguration safety net / clamp floor (see "Plan resolution"), not a
+normal sizing target.
 
 ### By node size
 

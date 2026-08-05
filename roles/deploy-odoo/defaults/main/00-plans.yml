@@ -36,7 +36,55 @@
 # only applied the first time a given (version, plan) pool is created;
 # changing them here later does NOT resize an existing pool. Resizing an
 # existing pool is odoo_action=apply-plan.
+#
+# limits.mem_hard is 0 (disabled) on every plan below, not a small nonzero
+# number - see pool-configmap.yaml.j2's limit_memory_hard comment for the
+# live incident (RLIMIT_AS killing aiobotocore's SSL-context setup on every
+# S3 filestore write) that this default is chosen to avoid. The pod's own
+# cgroup memory.max (pod.mem_limit) plus limit_memory_soft (RSS-based,
+# graceful worker recycling) are what actually enforce memory here now.
+#
+# Every plan below keeps a `plan_sizing_master_overhead_bytes` (see
+# defaults/main/01-deploy-odoo-defaults.yml) margin between
+# `workers * limits.mem_soft` and `pod.mem_limit` - enforced by
+# tasks/_assert-plan-spec.yml's cross-field invariant, not just eyeballed
+# here; kept consistent across plans so that invariant has the same
+# 128Mi margin everywhere, tier differences coming from worker COUNT
+# (more concurrent request handlers) rather than per-worker RSS budget.
+#
+# `minimal` is not just a manual-run/misconfiguration safety net (that
+# role is now literally this dict - see plan_spec_hard_fallback in
+# 01-deploy-odoo-defaults.yml, which points straight at it) - it is ALSO
+# the FLOOR every other plan's numeric fields get clamped up to if an
+# externally-supplied plan_spec (the Xayma app, or a manual
+# plan_spec_json) sends something smaller (see
+# tasks/_clamp-plan-spec.yml). Every number here is deliberately the
+# smallest value this platform considers safe to run at all, not a
+# real commercial tier.
 plans:
+  minimal:
+    workers: 2
+    replicas_min: 1
+    replicas_max: 2
+    pod:
+      cpu_request: "150m"
+      cpu_limit: "1"
+      mem_request: "384Mi"
+      mem_limit: "768Mi"
+    limits:
+      mem_soft: 268435456         # 256Mi - 2 workers * 256Mi + 128Mi master overhead = 768Mi = pod.mem_limit above, exactly
+      mem_hard: 0                 # disabled - see header comment
+      time_cpu: 120
+      time_real: 300
+      request: 8196
+    cron:
+      threads: 1
+    db_maxconn: 5
+    init_modules: "base"
+    tenant_db_max_connections: 5
+    ratelimit:
+      avg: 5
+      burst: 15
   standard:
     workers: 2
     replicas_min: 1
@@ -47,8 +95,8 @@ plans:
       mem_request: "512Mi"
       mem_limit: "1Gi"
     limits:
-      mem_soft: 536870912         # 512Mi - keep BELOW pod.mem_limit above
-      mem_hard: 805306368         # 768Mi - keep BELOW pod.mem_limit above
+      mem_soft: 402653184         # 384Mi - 2 workers * 384Mi + 128Mi master overhead = 896Mi, below pod.mem_limit (1Gi) above
+      mem_hard: 0                 # disabled - see header comment
       time_cpu: 120
       time_real: 300
       request: 8196
@@ -70,8 +118,8 @@ plans:
       mem_request: "1Gi"
       mem_limit: "2Gi"
     limits:
-      mem_soft: 1073741824        # 1Gi - keep BELOW pod.mem_limit above
-      mem_hard: 1610612736        # 1.5Gi - keep BELOW pod.mem_limit above
+      mem_soft: 469762048         # 448Mi - 4 workers * 448Mi + 128Mi master overhead = 1920Mi, below pod.mem_limit (2Gi) above
+      mem_hard: 0                 # disabled - see header comment
       time_cpu: 120
       time_real: 300
       request: 8196

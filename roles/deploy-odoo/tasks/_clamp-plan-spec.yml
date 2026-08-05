@@ -1,0 +1,96 @@
+---
+# include_tasks helper (imported by _resolve-plan-spec.yml, after the
+# precedence merge and BEFORE _assert-plan-spec.yml) - clamps every
+# per-field value in `_resolved_spec` that falls BELOW plans.minimal's
+# corresponding value UP to that floor, and records which fields moved.
+# Never clamps DOWN: raising a tenant above what was ordered is harmless,
+# silently lowering it is a billing/support problem.
+#
+# This exists because plan_spec can come from OUTSIDE this repo (the
+# Xayma app, or a manual `-e plan_spec_json=...`/AWX survey run) - see
+# _resolve-plan-spec.yml's precedence comment. Live incident: a
+# `starter-tier-1` plan_spec sent `workers: 5` against a 1.5Gi pod
+# (`pod.mem_limit`) with `limits.mem_hard: 335544320` (320MiB) - see
+# pool-configmap.yaml.j2's limit_memory_hard comment for the full
+# RLIMIT_AS/aiobotocore incident this combination caused.
+#
+# EXCLUDED from this generic clamp, each for its own reason (see
+# _assert-plan-spec.yml, which polices these instead - by FAILING the
+# play, not clamping, because each is an upstream-bug signal, not
+# something safe to silently correct):
+#   - limits.mem_hard: "bigger is safer" does not hold for this field - a
+#     small NONZERO value is the dangerous case (RLIMIT_AS caps VIRTUAL
+#     address space, not RSS), while 0 (disabled) is the SAFEST value of
+#     all. 320MiB is not a suspiciously small number in isolation either -
+#     no per-field floor would have caught it.
+#   - pod.* (cpu/mem request/limit): Kubernetes quantity STRINGS ("500m",
+#     "1Gi"), not plain integers - comparing/raising them generically
+#     needs real unit-conversion logic this role doesn't otherwise carry.
+#     pod.mem_limit's safety is instead enforced RELATIONALLY, by
+#     _assert-plan-spec.yml's cross-field invariant against
+#     `workers * limits.mem_soft` - a per-field floor on pod.mem_limit
+#     alone could never have caught the live incident anyway (each field
+#     looked plausible on its own; only the combination was unsafe).
+#   - init_modules: a list of module names, not a magnitude - "below
+#     floor" has no meaning here.
+#
+# NOT a generic loop over dotted field-path strings (dict lookup built
+# from e.g. "limits.mem_soft" split on '.') - see
+# _sync-pgbouncer-tenants.yml's header comment for the exact class of bug
+# (Jinja's map(attribute=...) doing nested-path splitting) that pattern
+# has already caused twice in this codebase. Every field is named
+# explicitly instead, at the cost of repetition.
+
+- name: "Determine which field(s), if any, fall below plans.minimal's floor"
+  ansible.builtin.set_fact:
+    _sizing_clamped_fields: >-
+      {{ (['workers'] if (_resolved_spec.workers | int) < (plans.minimal.workers | int) else [])
+         + (['replicas_min'] if (_resolved_spec.replicas_min | int) < (plans.minimal.replicas_min | int) else [])
+         + (['replicas_max'] if (_resolved_spec.replicas_max | int) < (plans.minimal.replicas_max | int) else [])
+         + (['limits.mem_soft'] if (_resolved_spec.limits.mem_soft | int) < (plans.minimal.limits.mem_soft | int) else [])
+         + (['limits.time_cpu'] if (_resolved_spec.limits.time_cpu | int) < (plans.minimal.limits.time_cpu | int) else [])
+         + (['limits.time_real'] if (_resolved_spec.limits.time_real | int) < (plans.minimal.limits.time_real | int) else [])
+         + (['limits.request'] if (_resolved_spec.limits.request | int) < (plans.minimal.limits.request | int) else [])
+         + (['cron.threads'] if (_resolved_spec.cron.threads | int) < (plans.minimal.cron.threads | int) else [])
+         + (['db_maxconn'] if (_resolved_spec.db_maxconn | int) < (plans.minimal.db_maxconn | int) else [])
+         + (['tenant_db_max_connections'] if (_resolved_spec.tenant_db_max_connections | int) < (plans.minimal.tenant_db_max_connections | int) else [])
+         + (['ratelimit.avg'] if (_resolved_spec.ratelimit.avg | int) < (plans.minimal.ratelimit.avg | int) else [])
+         + (['ratelimit.burst'] if (_resolved_spec.ratelimit.burst | int) < (plans.minimal.ratelimit.burst | int) else []) }}
+
+- name: "Warn about any fields being raised to the minimal floor"
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: plan_spec for plan={{ plan }} had the following field(s)
+      below plans.minimal's floor - raised to the floor value, never
+      lowered: {{ _sizing_clamped_fields | join(', ') }}. Recorded on this
+      pool's Deployments via the {{ sizing_clamped_annotation_key }}
+      annotation so an under-provisioned instance stays distinguishable
+      from a correctly provisioned one.
+  when: _sizing_clamped_fields | length > 0
+
+# One combine(), every field computed with the `[a, b] | max` idiom -
+# deliberately not `| default(...)`-style, since both values always
+# exist by this point (the merge above guarantees it) and the comparison
+# needs to be numeric, not presence-based.
+- name: "Apply the clamp"
+  ansible.builtin.set_fact:
+    _resolved_spec: >-
+      {{ _resolved_spec | combine({
+           'workers': [_resolved_spec.workers | int, plans.minimal.workers | int] | max,
+           'replicas_min': [_resolved_spec.replicas_min | int, plans.minimal.replicas_min | int] | max,
+           'replicas_max': [_resolved_spec.replicas_max | int, plans.minimal.replicas_max | int] | max,
+           'db_maxconn': [_resolved_spec.db_maxconn | int, plans.minimal.db_maxconn | int] | max,
+           'tenant_db_max_connections': [_resolved_spec.tenant_db_max_connections | int, plans.minimal.tenant_db_max_connections | int] | max,
+           'limits': _resolved_spec.limits | combine({
+             'mem_soft': [_resolved_spec.limits.mem_soft | int, plans.minimal.limits.mem_soft | int] | max,
+             'time_cpu': [_resolved_spec.limits.time_cpu | int, plans.minimal.limits.time_cpu | int] | max,
+             'time_real': [_resolved_spec.limits.time_real | int, plans.minimal.limits.time_real | int] | max,
+             'request': [_resolved_spec.limits.request | int, plans.minimal.limits.request | int] | max,
+           }),
+           'cron': {'threads': [_resolved_spec.cron.threads | int, plans.minimal.cron.threads | int] | max},
+           'ratelimit': {
+             'avg': [_resolved_spec.ratelimit.avg | int, plans.minimal.ratelimit.avg | int] | max,
+             'burst': [_resolved_spec.ratelimit.burst | int, plans.minimal.ratelimit.burst | int] | max,
+           },
+         }, recursive=True) }}
+  when: _sizing_clamped_fields | length > 0

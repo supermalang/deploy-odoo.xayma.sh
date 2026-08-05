@@ -49,26 +49,84 @@
       be >=2 - see README on prefork mode - and replicas_max/ratelimit.burst
       must be >= their min/avg counterparts). Resolved: {{ _resolved_spec }}
 
-# limit_memory_soft/hard must stay BELOW the pod's own memory limit so Odoo
-# self-recycles a worker before Kubernetes OOMKills the whole pod - same
-# invariant the previous per-instance role enforced via comment discipline
-# alone; here it's a hard assert since a bad plan_spec now comes from
-# outside this repo.
-- name: Assert limits.mem_soft/mem_hard stay below the pod's own memory limit
+# Cross-field memory invariants. FAIL the play rather than clamp anything
+# here (unlike _clamp-plan-spec.yml's per-field floors) - each of these
+# indicates an internally INCONSISTENT plan_spec, which is an upstream
+# bug in whatever produced it, not a value that's simply too small and
+# safe to silently correct. Live incident this whole block exists to
+# catch: an externally-supplied `starter-tier-1` plan_spec set
+# `workers: 5`, `pod.mem_limit: 1.5Gi`, and `limits.mem_hard: 335544320`
+# (320MiB) - every one of those three numbers looks individually
+# plausible; only checked TOGETHER do they reveal that RLIMIT_AS (a
+# VIRTUAL-address-space cap, not RSS) killed aiobotocore's SSL-context
+# setup on the very first S3 filestore write from a freshly-spawned
+# worker - see pool-configmap.yaml.j2's limit_memory_hard comment for the
+# full mechanism.
+#
+# pod.mem_limit is a Kubernetes resource quantity (e.g. "1.5Gi") - the IEC
+# "Mi"/"Gi"/"Ki" suffix Kubernetes uses, NOT a suffix Ansible's
+# human_to_bytes recognizes (it errors on "768Mi", wanting "768M" or
+# "768MB" instead). Ansible's bare M/G/K are already binary (1024-based),
+# numerically identical to Kubernetes' Mi/Gi/Ki - so stripping the
+# trailing "i" is an exact conversion, not an approximation.
+- name: Assert limits.mem_soft stays below the pod's own memory limit
   ansible.builtin.assert:
     that:
-      # pod.mem_limit is a Kubernetes resource quantity (e.g. "768Mi") - the
-      # IEC "Mi"/"Gi"/"Ki" suffix Kubernetes uses, NOT a suffix Ansible's
-      # human_to_bytes recognizes (it errors on "768Mi", wanting "768M" or
-      # "768MB" instead). Ansible's bare M/G/K are already binary
-      # (1024-based), numerically identical to Kubernetes' Mi/Gi/Ki - so
-      # stripping the trailing "i" is an exact conversion, not an
-      # approximation.
       - (_resolved_spec.limits.mem_soft | int) < (_resolved_spec.pod.mem_limit | regex_replace('i$', '') | human_to_bytes)
-      - (_resolved_spec.limits.mem_hard | int) < (_resolved_spec.pod.mem_limit | regex_replace('i$', '') | human_to_bytes)
-      - (_resolved_spec.limits.mem_soft | int) <= (_resolved_spec.limits.mem_hard | int)
     fail_msg: >-
-      plan_spec for plan={{ plan }}: limits.mem_soft/mem_hard
-      ({{ _resolved_spec.limits.mem_soft }}/{{ _resolved_spec.limits.mem_hard }}
+      plan_spec for plan={{ plan }}: limits.mem_soft ({{ _resolved_spec.limits.mem_soft }}
       bytes) must stay BELOW pod.mem_limit ({{ _resolved_spec.pod.mem_limit }})
-      so Odoo self-recycles a worker before Kubernetes OOMKills the pod.
+      so Odoo self-recycles a worker (RSS-based) before Kubernetes OOMKills the pod.
+
+# limits.mem_hard (odoo.conf limit_memory_hard) sets RLIMIT_AS - VIRTUAL
+# address space, not RSS - on every worker (confirmed against Odoo 19's
+# own odoo/service/server.py: `if limit_memory_hard: resource.setrlimit(
+# resource.RLIMIT_AS, ...)`, guarded on truthiness, so 0 cleanly disables
+# it). 0 (disabled - every plan in 00-plans.yml's catalog default to this)
+# is therefore the SAFE value; a small NONZERO value is the dangerous
+# one, since aiobotocore's SSL-context setup alone reserves ~72MiB of
+# thread stack + glibc malloc-arena on top of an already-~250-300MiB-VIRT
+# worker for work that touches almost no actual memory - so anything
+# under ~1.5GiB risks the exact ENOMEM this block exists to prevent.
+# Skipped entirely when mem_hard is 0 (disabled) - both its own floor
+# check and its relation to mem_soft are meaningless once RLIMIT_AS isn't
+# being enforced at all.
+- name: Assert a nonzero limits.mem_hard is set to a safe value
+  ansible.builtin.assert:
+    that:
+      - (_resolved_spec.limits.mem_hard | int) >= (_resolved_spec.limits.mem_soft | int)
+      - (_resolved_spec.limits.mem_hard | int) >= 1610612736
+    fail_msg: >-
+      plan_spec for plan={{ plan }}: limits.mem_hard ({{ _resolved_spec.limits.mem_hard }}
+      bytes) is nonzero but either below limits.mem_soft
+      ({{ _resolved_spec.limits.mem_soft }}) or below the ~1.5GiB floor
+      RLIMIT_AS needs to not kill a worker's own SSL-context setup - see
+      this task's header comment. Set it to 0 to disable RLIMIT_AS
+      entirely (the default on every 00-plans.yml catalog entry) rather
+      than picking a small nonzero value.
+  when: (_resolved_spec.limits.mem_hard | int) != 0
+
+# The invariant no single per-field floor could ever catch: total worker
+# RSS demand at the soft ceiling, PLUS the master process's own overhead,
+# must fit inside the pod's own cgroup memory.max - otherwise Kubernetes
+# OOMKills the whole pod before any individual worker's limit_memory_soft
+# ever gets a chance to gracefully recycle it. This is exactly what the
+# live `starter-tier-1` incident violated (5 workers, no stated
+# limits.mem_soft override so it inherited the ~256-384MiB hard-fallback
+# figure, against a 1.5Gi pod - even before RLIMIT_AS entered the
+# picture).
+- name: Assert workers * limits.mem_soft + master overhead fits within pod.mem_limit
+  ansible.builtin.assert:
+    that:
+      - >-
+        ((_resolved_spec.workers | int) * (_resolved_spec.limits.mem_soft | int) + (plan_sizing_master_overhead_bytes | int))
+        <= (_resolved_spec.pod.mem_limit | regex_replace('i$', '') | human_to_bytes)
+    fail_msg: >-
+      plan_spec for plan={{ plan }}: workers ({{ _resolved_spec.workers }}) *
+      limits.mem_soft ({{ _resolved_spec.limits.mem_soft }} bytes) +
+      plan_sizing_master_overhead_bytes ({{ plan_sizing_master_overhead_bytes }})
+      exceeds pod.mem_limit ({{ _resolved_spec.pod.mem_limit }}) - Kubernetes
+      would OOMKill the whole pod under normal worker load before any
+      single worker's own limit_memory_soft ever got a chance to
+      gracefully recycle it. Raise pod.mem_limit, or lower workers/
+      limits.mem_soft.

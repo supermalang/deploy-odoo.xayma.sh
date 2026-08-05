@@ -54,6 +54,15 @@ pool_pg_role: "pool_{{ version }}_{{ plan }}"
 # tasks/_resolve-pool.yml's create-only semantics).
 pool_spec_hash_annotation_key: "xayma.sh/plan-spec-hash"
 
+# Annotation key recording which field(s), if any, an externally-supplied
+# plan_spec had clamped up to plans.minimal's floor (see
+# tasks/_clamp-plan-spec.yml) - a comma-joined list of field names (e.g.
+# "workers,limits.mem_soft"), or omitted entirely when nothing was
+# clamped. Lets a months-later look at a pool's Deployment distinguish
+# "under-provisioned on purpose" from "silently corrected at deploy time"
+# without archaeology.
+sizing_clamped_annotation_key: "xayma.sh/sizing-clamped"
+
 # --- Postgres topology seam ---
 # Only 'shared' is implemented (see defaults' pg_topology + _assert-plan.yml,
 # which fails fast on anything else) - the other two branches exist so a

@@ -19,6 +19,9 @@ metadata:
   labels: {{ pool_labels_http | to_json }}
   annotations:
     {{ pool_spec_hash_annotation_key }}: "{{ pool_spec_hash }}"
+{% if _sizing_clamped_fields | default([]) | length > 0 %}
+    {{ sizing_clamped_annotation_key }}: "{{ _sizing_clamped_fields | join(',') }}"
+{% endif %}
 spec:
   replicas: {{ pool_spec.replicas_min }}
   selector:
@@ -199,6 +202,17 @@ spec:
           command: ["odoo"]
           args: ["-c", "/etc/odoo/odoo.conf", "--workers={{ pool_spec.workers }}", "--max-cron-threads=0"]
           env:
+            # Caps glibc's per-thread malloc arena reservations (each
+            # arena defaults to ~64MiB of VIRTUAL address space on first
+            # allocation from a new thread) - a contributing factor in
+            # the limit_memory_hard/RLIMIT_AS incident documented on
+            # pool-configmap.yaml.j2's limit_memory_hard comment
+            # (aiobotocore's SSL-context setup runs via
+            # asyncio.to_thread). Kept even now that limit_memory_hard
+            # defaults to 0 (disabled) - cheap, independent insurance
+            # against unbounded VIRT growth from any other threaded/async
+            # code path this pool's addons might introduce later.
+            - {name: MALLOC_ARENA_MAX, value: "2"}
             - {name: ODOO_SESSION_REDIS, value: "1"}
             - {name: ODOO_SESSION_REDIS_HOST, value: "{{ redis_name }}"}
             - {name: ODOO_SESSION_REDIS_PORT, value: "6379"}
@@ -285,6 +299,9 @@ metadata:
   labels: {{ pool_labels_cron | to_json }}
   annotations:
     {{ pool_spec_hash_annotation_key }}: "{{ pool_spec_hash }}"
+{% if _sizing_clamped_fields | default([]) | length > 0 %}
+    {{ sizing_clamped_annotation_key }}: "{{ _sizing_clamped_fields | join(',') }}"
+{% endif %}
 spec:
   replicas: 1
   selector:
@@ -397,6 +414,9 @@ spec:
           command: ["odoo"]
           args: ["-c", "/etc/odoo/odoo.conf", "--workers=0", "--max-cron-threads={{ pool_spec.cron.threads }}"]
           env:
+            # MALLOC_ARENA_MAX - see {pool}-http's identical env entry
+            # above for why.
+            - {name: MALLOC_ARENA_MAX, value: "2"}
             - {name: ODOO_SESSION_REDIS, value: "1"}
             - {name: ODOO_SESSION_REDIS_HOST, value: "{{ redis_name }}"}
             - {name: ODOO_SESSION_REDIS_PORT, value: "6379"}
@@ -468,6 +488,9 @@ metadata:
   labels: {{ pool_labels_gevent | to_json }}
   annotations:
     {{ pool_spec_hash_annotation_key }}: "{{ pool_spec_hash }}"
+{% if _sizing_clamped_fields | default([]) | length > 0 %}
+    {{ sizing_clamped_annotation_key }}: "{{ _sizing_clamped_fields | join(',') }}"
+{% endif %}
 spec:
   replicas: 1
   selector:
@@ -589,6 +612,9 @@ spec:
           # for the /websocket-only routing to this Service).
           args: ["-c", "/etc/odoo/odoo.conf", "--workers=1", "--max-cron-threads=0", "--gevent-port=8072"]
           env:
+            # MALLOC_ARENA_MAX - see {pool}-http's identical env entry
+            # above for why.
+            - {name: MALLOC_ARENA_MAX, value: "2"}
             - {name: ODOO_SESSION_REDIS, value: "1"}
             - {name: ODOO_SESSION_REDIS_HOST, value: "{{ redis_name }}"}
             - {name: ODOO_SESSION_REDIS_PORT, value: "6379"}

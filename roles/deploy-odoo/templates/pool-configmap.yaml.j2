@@ -111,9 +111,38 @@ data:
     workers = {{ pool_spec.workers }}
     max_cron_threads = 0
 
-    ; limit_memory_soft/hard kept BELOW the pod's own memory limit
-    ; ({{ pool_spec.pod.mem_limit }}) so Odoo self-recycles a worker before
-    ; Kubernetes OOMKills the whole pod.
+    ; limit_memory_soft is RSS-based (config.py's own resource.getrusage
+    ; check) and kept BELOW the pod's own memory limit
+    ; ({{ pool_spec.pod.mem_limit }}) so Odoo self-recycles a worker
+    ; gracefully, between requests, before Kubernetes OOMKills the whole
+    ; pod on cgroup memory.max.
+    ;
+    ; limit_memory_hard sets RLIMIT_AS instead - VIRTUAL address space,
+    ; not RSS (confirmed against Odoo 19's odoo/service/server.py:
+    ; `if limit_memory_hard: resource.setrlimit(resource.RLIMIT_AS, ...)`,
+    ; guarded on truthiness, so 0 cleanly disables the call entirely - see
+    ; 00-plans.yml's plans.*.limits.mem_hard, all 0 by default). Left
+    ; nonzero at a value sized for RSS (as every plan here used to be),
+    ; this duplicates memory.max badly: a worker's VIRTUAL reservation
+    ; crosses the ceiling long before its actual RESIDENT usage does.
+    ; Live incident: a 320MiB limit_memory_hard - individually a
+    ; plausible-looking starter-tier number, not caught by any per-field
+    ; floor - killed aiobotocore's SSL-context setup
+    ; (asyncio.to_thread(_build_ssl_contexts) -> ssl_context.
+    ; load_verify_locations()) on the FIRST S3 filestore write from every
+    ; freshly-spawned worker: a new thread reserves ~8MiB of stack plus a
+    ; fresh ~64MiB glibc malloc arena on its first allocation - work that
+    ; touches almost no actual memory, but whose ~72MiB VIRTUAL
+    ; reservation was enough to cross 320MiB on a worker already sitting
+    ; near 250-300MiB VIRT baseline. `OSError: [Errno 12] Cannot allocate
+    ; memory`, raised identically for every bundle.css()/bundle.js() call,
+    ; with the pod's own cgroup sitting at 13% of its actual memory.max
+    ; the entire time - this was never about real memory pressure. See
+    ; tasks/_assert-plan-spec.yml for the asserts that now guard both this
+    ; field directly (nonzero must be >= ~1.5GiB) and the OTHER invariant
+    ; this incident also violated (workers * limit_memory_soft + master
+    ; overhead vs. pod.mem_limit) that no single field's value could ever
+    ; reveal on its own.
     limit_memory_soft = {{ pool_spec.limits.mem_soft }}
     limit_memory_hard = {{ pool_spec.limits.mem_hard }}
     limit_time_cpu = {{ pool_spec.limits.time_cpu }}

@@ -68,7 +68,14 @@ pg_topology: shared
 # as extra_vars. `plan_spec_hard_fallback` is the LAST-resort layer - used
 # only when a manual/CLI run sets `plan` to a name that isn't even in the
 # 00-plans.yml catalog and sends no plan_spec/plan_spec_json either. It is
-# deliberately conservative (this is a safety net, not a real tier).
+# deliberately conservative (this is a safety net, not a real tier) -
+# literally `plans.minimal` (00-plans.yml), not a separate hand-maintained
+# copy of the same numbers: that catalog entry already IS this platform's
+# floor/safety-net spec (see its own header comment and
+# tasks/_clamp-plan-spec.yml, which clamps every OTHER plan_spec's
+# per-field values up to it too), so this is the one place both roles
+# ("what a manual run gets when `plan` is unrecognized" and "the floor
+# every plan_spec is clamped against") are guaranteed to never drift apart.
 #
 # This whole model replaces the old flat `plan_*` extra_vars contract - that
 # doctrine existed to keep AWX surveys simple (flat fields only); the app
@@ -76,29 +83,22 @@ pg_topology: shared
 # directly, so there is no longer a reason to flatten it. The ONE manual-run
 # survey field that remains is `plan_spec_json` (a JSON string, parsed by
 # tasks/_resolve-plan-spec.yml) - see README "Input contract".
-plan_spec_hard_fallback:
-  workers: 2
-  replicas_min: 1
-  replicas_max: 2
-  pod:
-    cpu_request: "150m"
-    cpu_limit: "1"
-    mem_request: "384Mi"
-    mem_limit: "768Mi"
-  limits:
-    mem_soft: 402653184         # 384Mi - keep BELOW pod.mem_limit above
-    mem_hard: 536870912         # 512Mi - keep BELOW pod.mem_limit above
-    time_cpu: 120
-    time_real: 300
-    request: 8196
-  cron:
-    threads: 1
-  db_maxconn: 5
-  init_modules: "base"
-  tenant_db_max_connections: 5
-  ratelimit:
-    avg: 5
-    burst: 15
+plan_spec_hard_fallback: "{{ plans.minimal }}"
+
+# Estimated (NOT measured via a direct benchmark) baseline RSS the Odoo
+# MASTER process itself needs on top of `workers * limits.mem_soft` worth
+# of worker processes - the master forks/monitors workers and holds
+# comparatively little state of its own, so this is a conservative-but-
+# generous margin, not a tight fit. Used only by
+# tasks/_assert-plan-spec.yml's cross-field invariant
+# (`pod.mem_limit >= workers * limits.mem_soft + this`), added after a live
+# incident where an externally-supplied plan_spec (`starter-tier-1`, 5
+# workers against a 1.5Gi pod) violated this exact relationship with no
+# single per-field value looking obviously wrong on its own - see
+# pool-configmap.yaml.j2's limit_memory_hard comment for the full
+# incident. Every plan in defaults/main/00-plans.yml's catalog is sized to
+# leave exactly this much headroom.
+plan_sizing_master_overhead_bytes: 134217728   # 128Mi
 
 # --- Role-owned, non-plan defaults ---
 odoo:

@@ -28,6 +28,12 @@
          | combine(plans[plan] | default({}), recursive=True)
          | combine(plan_spec | default({}), recursive=True) }}
 
+# Clamp any per-field value below plans.minimal's floor UP before asserting
+# - see _clamp-plan-spec.yml for why this is a clamp (never lowering) for
+# most fields but a hard FAIL (next task) for limits.mem_hard/pod.* instead.
+- name: Clamp any per-field value below plans.minimal's floor
+  ansible.builtin.import_tasks: _clamp-plan-spec.yml
+
 - name: Assert the resolved plan_spec is well-formed
   ansible.builtin.import_tasks: _assert-plan-spec.yml
 
