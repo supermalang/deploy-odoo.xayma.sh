@@ -25,14 +25,46 @@
       - "xayma.sh/customer"
   register: _pgb_tenants_raw
 
+# NOT map(attribute='xayma.sh/instance')/map(attribute=tenant_db_max_connections_annotation_key)
+# - Jinja's map(attribute=...) SPLITS the attribute string on '.' and does
+# a nested attribute/key lookup per segment (documented Jinja2 behavior,
+# the same mechanism that lets map(attribute='metadata.labels') reach two
+# levels deep in the original version of this task). A label/annotation
+# KEY that itself contains a literal '.' - every key in this codebase, by
+# k8s convention ("xayma.sh/...") - gets misread as a nested path instead
+# of one literal key: "xayma.sh/instance" becomes
+# labels['xayma']['sh/instance'], which fails with "'dict object' has no
+# attribute 'xayma'" the moment there is at least one resource to
+# evaluate it against (an empty resource list never evaluates the getter
+# at all, which is exactly why this stayed hidden through every deploy
+# attempt where this tenant's own IngressRoute - matched by the SAME
+# query above - didn't exist yet). See check-snapshot-freshness.yml's
+# identical fix for the same root cause.
+#
+# NOT a single {{ dict(...) }} expression built from a Jinja list
+# comprehension either - Jinja has no such syntax (`[x for x in y]` is
+# Python-only; Jinja's equivalent is the {% for %} STATEMENT tag, which
+# can only ever render to a STRING, never hand back a native dict/list
+# object - confirmed the hard way, this raised a TemplateSyntaxError on
+# the very first attempt). Building the dict INCREMENTALLY via `combine`
+# across a real Ansible `loop:` keeps every value a plain, single-expression
+# Jinja lookup (bracket subscript, no `.`-splitting, no control-flow tags
+# to fight the native-type templating that lets `combine()` return an
+# actual dict instead of dict-shaped text).
+- name: "Initialize the tenant slug -> cap map (so a zero-tenant platform still ends with {}, not undefined)"
+  ansible.builtin.set_fact:
+    _pgb_tenant_caps: {}
+
 - name: "Build the tenant slug -> cap map from live annotations"
   ansible.builtin.set_fact:
     _pgb_tenant_caps: >-
-      {{ dict(
-           (_pgb_tenants_raw.resources | map(attribute='metadata.labels') | map(attribute='xayma.sh/instance') | list)
-           | zip(_pgb_tenants_raw.resources | map(attribute='metadata.annotations')
-                 | map(attribute=tenant_db_max_connections_annotation_key) | list)
-         ) }}
+      {{ _pgb_tenant_caps | combine({
+           item.metadata.labels['xayma.sh/instance']:
+             item.metadata.annotations[tenant_db_max_connections_annotation_key]
+         }) }}
+  loop: "{{ _pgb_tenants_raw.resources }}"
+  loop_control:
+    label: "{{ item.metadata.labels['xayma.sh/instance'] }}"
 
 - name: "Overlay this call's tenant, if given"
   ansible.builtin.set_fact:
