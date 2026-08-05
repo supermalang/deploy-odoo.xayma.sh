@@ -190,8 +190,12 @@ spec:
               cpu: 100m
               memory: 64Mi
       containers:
+        # odoo_image_tag - content-derived from the Dockerfile, not a bare
+        # version-dot-zero string - see _ensure-odoo-image.yml's header
+        # comment for why a fixed tag let a rebuilt image go undeployed
+        # forever.
         - name: odoo
-          image: "{{ odoo_image_repo }}:{{ version }}.0"
+          image: "{{ odoo_image_repo }}:{{ odoo_image_tag }}"
           command: ["odoo"]
           args: ["-c", "/etc/odoo/odoo.conf", "--workers={{ pool_spec.workers }}", "--max-cron-threads=0"]
           env:
@@ -387,8 +391,9 @@ spec:
               cpu: 100m
               memory: 64Mi
       containers:
+        # odoo_image_tag - see {pool}-http's identical image line above.
         - name: odoo
-          image: "{{ odoo_image_repo }}:{{ version }}.0"
+          image: "{{ odoo_image_repo }}:{{ odoo_image_tag }}"
           command: ["odoo"]
           args: ["-c", "/etc/odoo/odoo.conf", "--workers=0", "--max-cron-threads={{ pool_spec.cron.threads }}"]
           env:
@@ -569,8 +574,9 @@ spec:
               cpu: 100m
               memory: 64Mi
       containers:
+        # odoo_image_tag - see {pool}-http's identical image line above.
         - name: odoo
-          image: "{{ odoo_image_repo }}:{{ version }}.0"
+          image: "{{ odoo_image_repo }}:{{ odoo_image_tag }}"
           command: ["odoo"]
           # --workers=0 (the odoo.conf default) is single-threaded mode, and
           # Odoo NEVER spawns a separate gevent/LiveChat worker in that mode

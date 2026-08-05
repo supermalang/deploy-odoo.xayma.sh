@@ -46,7 +46,10 @@ Requirements
   role build it — see "Custom Odoo image".
 - **Only if `odoo_image_build.enabled: true`**: `nerdctl-full` (the full
   release bundle, not the bare binary — it needs to include `buildkitd`)
-  on the host that runs this playbook.
+  on the host that runs this playbook, AND BuildKit itself actually
+  enabled/running there (`sudo systemctl enable --now buildkit` for
+  rootful) — nerdctl-full only bundles the `buildkitd` binary, it does not
+  start it as a service on its own.
 - The vault password, as a file (CLI) or a credential record (AWX).
 
 Configuration
@@ -575,14 +578,19 @@ doesn't ship. `tasks/_ensure-odoo-image.yml` (called on every
    stages `files/odoo-image/` on the managed node
    (`/tmp/xayma-odoo-image-build/` — see "Known caveats" on why), then
    builds (`FROM odoo:{version}.0` + `pip install redis fsspec[s3]
-   python_slugify`) and pushes via `nerdctl` against k3s's own embedded
-   containerd — needs the **`nerdctl-full`** release specifically (the
-   bare binary doesn't bundle `buildkitd`).
+   python_slugify packaging`) and pushes via `nerdctl` against k3s's own
+   embedded containerd — needs the **`nerdctl-full`** release specifically
+   (the bare binary doesn't bundle `buildkitd`) with BuildKit itself
+   separately enabled/running (see "Prerequisites" above) — the tag is
+   `{version}.0-<12 hex chars of the Dockerfile's own sha256>`, not a bare
+   `{version}.0`, so a Dockerfile change always produces a new tag instead
+   of silently reusing a stale, already-registered one.
 3. If missing and `odoo_image_build.enabled: false`: fails fast with a
    clear message, rather than every pod in a brand-new pool crash-looping
    on a missing image.
 
-To activate: install `nerdctl-full` on the k3s node, set
+To activate: install `nerdctl-full` on the k3s node, enable/start
+BuildKit itself (see "Prerequisites" above), set
 `odoo_image_build.enabled: true`, point `odoo_image_repo` at your registry
 namespace, and add the two `vault_odoo_dockerhub_*` seeds. Otherwise, push
 the tag yourself (`docker build`/`nerdctl build` +

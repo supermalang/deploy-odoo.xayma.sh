@@ -125,7 +125,9 @@ spec:
           # --no-http below means session_redis's own runtime is never
           # invoked (ODOO_SESSION_REDIS is intentionally left unset here -
           # see pool-deployments.yaml.j2 for where it's actually needed).
-          image: "{{ odoo_image_repo }}:{{ version }}.0"
+          # odoo_image_tag - content-derived, same image the pool itself
+          # runs - see _ensure-odoo-image.yml's header comment.
+          image: "{{ odoo_image_repo }}:{{ odoo_image_tag }}"
           command: ["/bin/bash", "-c"]
           args:
             # --without-demo=True, not =all - "all" isn't one of Odoo 19's

@@ -9,16 +9,31 @@
 # l10n_sn/Africa-Dakar defaults) - override the script below if a tenant
 # needs different ones.
 #
-# Deliberately renders fixup_version/fixup_pool_config_name/
+# Deliberately renders fixup_image/fixup_pool_config_name/
 # fixup_pool_secret_name, NOT the plain version/pool_config_name/
 # pool_secret_name vars/main.yml also derives from version/plan - those
 # are AWX survey fields (extra_vars ALWAYS win over set_fact/task vars, no
 # exception, per Ansible's own precedence rules), and this Job is called
 # from restore-tenant.yml, where version/plan must NOT come from whatever
 # the survey happened to send. Callers set these three explicitly:
-# deploy-tenant.yml from its own (legitimately real) version/pool_*;
-# restore-tenant.yml from tenant_version/tenant_pool_id, recovered from
-# live state. Never widen this template to read the plain names again.
+# deploy-tenant.yml builds fixup_image from its own (legitimately real)
+# odoo_image_repo/odoo_image_tag plus pool_*; restore-tenant.yml builds it
+# from the fixed-up tenant's OWN pool's actual running image (read live
+# off its Deployment, not reconstructed) plus tenant_pool_id, recovered
+# from live state. Never widen this template to read the plain names
+# again.
+#
+# fixup_image is a full repo-colon-tag reference, not a bare version this
+# template appends ".0" to itself - this Job used to build that string
+# here directly from a fixup_version variable, which broke the instant
+# _ensure-odoo-image.yml started tagging images by content hash (see that
+# file's header comment): deploy-tenant.yml's own fixup call would have
+# tried to pull a bare version-dot-zero tag that no longer existed once
+# the pool's real image moved to a hashed tag, and restore-tenant.yml's
+# call has no way to know what hash suffix a DIFFERENT, historical pool's
+# image was last built with anyway. Passing the full ref lets each caller
+# supply whatever is actually correct for its own situation instead of
+# this template guessing.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -115,7 +130,7 @@ spec:
           # --no-http below means session_redis's own runtime is never
           # invoked (ODOO_SESSION_REDIS is intentionally left unset here -
           # see pool-deployments.yaml.j2 for where it's actually needed).
-          image: "{{ odoo_image_repo }}:{{ fixup_version }}.0"
+          image: "{{ fixup_image }}"
           command: ["/bin/bash", "-c"]
           args:
             - |

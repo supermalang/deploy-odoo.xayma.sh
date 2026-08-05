@@ -221,8 +221,12 @@
     # deploy legitimately owns version/pool_config_name/pool_secret_name
     # (real extra_vars/vars/main.yml-derived here) - see job-fixup.yaml.j2's
     # header comment for why it reads these under different names instead
-    # of the plain ones directly.
-    fixup_version: "{{ version }}"
+    # of the plain ones directly. fixup_image reuses odoo_image_tag - the
+    # SAME content-derived tag _resolve-pool.yml (via _ensure-odoo-image.yml,
+    # already run earlier in this same task file) just ensured exists for
+    # THIS pool - not a bare "{{ version }}.0" this template would have to
+    # reconstruct itself.
+    fixup_image: "{{ odoo_image_repo }}:{{ odoo_image_tag }}"
     fixup_pool_config_name: "{{ pool_config_name }}"
     fixup_pool_secret_name: "{{ pool_secret_name }}"
   register: _deploy_fixup_job

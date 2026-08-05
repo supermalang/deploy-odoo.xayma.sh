@@ -313,26 +313,31 @@ redis:
 # the FIRST session access on any pool pod hits an AttributeError (the
 # module catches the ImportError and continues with `redis = None`, then
 # crashes on first real use, not at startup). `odoo_image_repo` must point
-# at a registry repo (e.g. "yourdockerhubuser/xayma-odoo") that carries a
-# `{version}.0`-tagged image built from files/odoo-image/Dockerfile (which
-# layers `pip install redis` onto the stock image) - see
-# tasks/_ensure-odoo-image.yml + odoo_image_build below for how that tag
-# gets there automatically, and README "Requirements"/"Custom Odoo image".
+# at a registry repo (e.g. "yourdockerhubuser/xayma-odoo") that carries an
+# image built from files/odoo-image/Dockerfile (which layers
+# `pip install redis fsspec[s3] python_slugify packaging` onto the stock
+# image), tagged `{version}.0-<content hash>` (see
+# tasks/_ensure-odoo-image.yml's odoo_image_tag comment for why it's not
+# a bare `{version}.0`) - see tasks/_ensure-odoo-image.yml +
+# odoo_image_build below for how that tag gets there automatically, and
+# README "Requirements"/"Custom Odoo image".
 odoo_image_repo: supermalang/xayma-odoo
 
-# Automatic build+push of `{{ odoo_image_repo }}:{{ version }}.0` when it
-# doesn't already exist in the registry (tasks/_ensure-odoo-image.yml,
-# called from _resolve-pool.yml on every deploy/change-plan/apply-plan).
-# Builds via `nerdctl` against k3s's OWN embedded containerd
-# (`k3s_containerd_socket` below) - DELIBERATELY not a separate Docker
-# daemon, since k3s already ships a container runtime and nerdctl is
-# Docker-CLI-compatible against it directly. Needs `vault_odoo_dockerhub_username`/
-# `vault_odoo_dockerhub_token` (an access token, not the account password)
-# in the vault, and nerdctl-full installed on whatever host runs this
-# playbook - see README "Requirements"/"Custom Odoo image". When disabled
-# and the tag is missing, _ensure-odoo-image.yml fails fast with a clear
-# message rather than letting every pool pod in a brand-new pool
-# crash-loop on a missing/wrong image.
+# Automatic build+push of `{{ odoo_image_repo }}:{{ odoo_image_tag }}`
+# when it doesn't already exist in the registry
+# (tasks/_ensure-odoo-image.yml, called from _resolve-pool.yml on every
+# deploy/change-plan/apply-plan). Builds via `nerdctl` against k3s's OWN
+# embedded containerd (`k3s_containerd_socket` below) - DELIBERATELY not
+# a separate Docker daemon, since k3s already ships a container runtime
+# and nerdctl is Docker-CLI-compatible against it directly. Needs
+# `vault_odoo_dockerhub_username`/`vault_odoo_dockerhub_token` (an access
+# token, not the account password) in the vault, and nerdctl-full PLUS
+# BuildKit itself actually enabled/running (nerdctl-full only bundles the
+# buildkitd binary, it does not start it - see README
+# "Requirements"/"Custom Odoo image") on whatever host runs this
+# playbook. When disabled and the tag is missing, _ensure-odoo-image.yml
+# fails fast with a clear message rather than letting every pool pod in a
+# brand-new pool crash-loop on a missing/wrong image.
 odoo_image_build:
   enabled: true
 

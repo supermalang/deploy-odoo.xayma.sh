@@ -100,7 +100,7 @@
 # restore ends with working filestore wiring regardless of how old the
 # dump is - same idempotent Job odoo_action=deploy runs on every call.
 #
-# job-fixup.yaml.j2 renders fixup_version/fixup_pool_config_name/
+# job-fixup.yaml.j2 renders fixup_image/fixup_pool_config_name/
 # fixup_pool_secret_name (NOT the plain version/pool_config_name/
 # pool_secret_name - see that template's header comment) precisely so this
 # works correctly. version/plan are AWX survey fields with defaults, and
@@ -113,6 +113,32 @@
 # silent. Passing fixup_pool_config_name/fixup_pool_secret_name directly,
 # built from tenant_pool_id (already recovered, not derived from version/
 # plan at all), has no name for any extra_var to collide with.
+- name: "Fetch this tenant's pool's http Deployment (for its actual running image) [{{ tenant_name }}]"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ xayma_namespace }}"
+    name: "{{ tenant_pool_id }}-http"
+  register: _restore_pool_deployment
+
+- name: "Assert this tenant's pool is actually live [{{ tenant_name }}]"
+  ansible.builtin.assert:
+    that: _restore_pool_deployment.resources | length > 0
+    fail_msg: >-
+      {{ tenant_pool_id }}-http does not exist - this tenant's recovered
+      pool assignment (tenant_pool_id, from its IngressRoute's own labels)
+      does not match any live pool. Cannot fix up a tenant whose pool
+      doesn't exist.
+
+# fixup_image is read straight off the pool's OWN currently-running pod
+# spec, not reconstructed from tenant_version - unlike deploy-tenant.yml's
+# fixup call, this pool was never resolved/built in THIS run (restore only
+# recovers live facts - see _recover-tenant.yml), so there is no
+# odoo_image_tag fact here to reuse, and no way to know what content-hash
+# suffix (see _ensure-odoo-image.yml) that pool's image was last built
+# with. Reading it live guarantees fixup always runs the EXACT image the
+# pool it's fixing up is already running, which is a stronger guarantee
+# than reconstructing any tag ever was.
 - name: "Apply the fixup Job [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -120,7 +146,9 @@
     namespace: "{{ xayma_namespace }}"
     template: job-fixup.yaml.j2
   vars:
-    fixup_version: "{{ tenant_version }}"
+    fixup_image: >-
+      {{ _restore_pool_deployment.resources[0].spec.template.spec.containers
+         | selectattr('name', 'equalto', 'odoo') | map(attribute='image') | first }}
     fixup_pool_config_name: "{{ tenant_pool_id }}-config"
     fixup_pool_secret_name: "{{ tenant_pool_id }}-secret"
   register: _restore_fixup_job
