@@ -1,0 +1,67 @@
+---
+# include_tasks helper - runs one SQL script inside pg-0 through the
+# Kubernetes API server instead of connecting to the shared Postgres over
+# the pod network. Exec is kubelet-mediated (control node -> API server ->
+# kubelet -> container runtime), not a pod-to-pod path, so kube-router's
+# per-pod NetworkPolicy chains (see templates/networkpolicies-platform.yaml.j2's
+# `allow-to-pg`) never see it - this is what lets a host-network caller
+# reach pg-0 at all. Callers `import_tasks` this with `query` set to a
+# single SQL string.
+#
+# community.postgresql's postgresql_user/_privs/_membership/_db modules give
+# each call site create-if-missing idempotence for free; this helper is just
+# `psql < query`, so `query` itself MUST be idempotent SQL (`DO $$ ... END
+# $$;` with an existence check, `CREATE OR REPLACE`, `GRANT` /`REVOKE`
+# - both already no-ops on a repeat) - there's no equivalent safety net here.
+#
+# Shells out to the real `kubectl` binary (ansible.builtin.command), not
+# kubernetes.core.k8s_exec - see _sync-pgbouncer-tenants.yml's "RELOAD
+# PgBouncer" task for the live, reproducible module failure ("OCI runtime
+# exec failed... unabl...") that motivated the same choice there; no reason
+# to trust the module more for this call site. `-i` without `-t`: stdin
+# only, no pseudo-tty - this is a non-interactive script, not a shell
+# session, and allocating one that nothing reads from is how the previous
+# incident happened.
+#
+# `query` travels over the child process's stdin, never `argv` or a
+# ConfigMap/template - `command.argv` below never contains `query`, only
+# psql's fixed flags, so nothing in it reaches kubectl's argv (visible to
+# anything reading /proc or `ps` on the control node), a pod log, or an
+# etcd object. That only protects the transport, though: callers passing a
+# password inside `query` must still set `no_log: true` on their own
+# import_tasks/task, exactly as every community.postgresql call site
+# already does - this task's OWN module args (`stdin`) would otherwise land
+# in the Ansible result/log unredacted like any other module's.
+- name: "Run SQL inside {{ pg_pod_name }} via the API server (bypasses pod-network NetworkPolicy)"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ kubeconfig_path }}"
+      - -n
+      - "{{ xayma_namespace }}"
+      - exec
+      - -i
+      - "{{ pg_pod_name }}"
+      - -c
+      - postgres
+      - --
+      - psql
+      - -v
+      - ON_ERROR_STOP=1
+      - -U
+      - postgres
+      - -d
+      - postgres
+    stdin: "{{ query }}"
+  changed_when: false
+
+# No login_password/PGPASSWORD anywhere above - deliberate, not an
+# oversight. psql with no `-h` connects over the container's own Unix
+# socket, and the official postgres image's docker-entrypoint.sh initdb's
+# every container with `--auth-local=trust` (it has to: the image's own
+# docker-entrypoint-initdb.d bootstrap runs as an unauthenticated local
+# `psql`) - only `host` connections (network, i.e. everything
+# community.postgresql does) require the password. Verify before reusing
+# this helper against any Postgres that isn't this StatefulSet's stock
+# image/entrypoint.

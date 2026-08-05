@@ -41,84 +41,83 @@
   retries: 60
   delay: 5
 
-- name: Resolve the shared Postgres connection facts
-  ansible.builtin.import_tasks: _pg-connection.yml
-
-# Fixed, once-ever platform PG roles - community.postgresql connects
-# DIRECTLY to the shared Postgres from the control node (see
-# requirements.yml + _pg-connection.yml for why this is expected to work).
+# Fixed, once-ever platform PG roles - run via the shared psql-over-exec
+# helper (_pg-exec.yml), NOT community.postgresql. This is the shared
+# Postgres's OWN bootstrap, before any tenant/pool/Job exists - there is no
+# pod carrying `xayma.sh/job-role` or a pool label yet for `allow-to-pg` to
+# admit, and community.postgresql connects from the control node's HOST
+# network namespace regardless, which default-deny-ingress blocks
+# unconditionally (see templates/networkpolicies-platform.yaml.j2's
+# `allow-to-pg` header comment - this is the exact call site that surfaced
+# it). _pg-connection.yml's ClusterIP is therefore not needed here at all;
+# it's still resolved for every OTHER community.postgresql call site in this
+# role (pool roles, tenant grants, ...), which keep using it unchanged - see
+# _pg-exec.yml's own header for why converting THOSE too is a separate,
+# much larger decision this fix does not make.
 # pgadmin_ro/backup_ro: read-only, survive tenant suspension (their DB-level
 # grants toggle independently of the pool role - see _set-tenant-state.yml).
 # pgbouncer_auth: a lookup-only role used solely as PgBouncer's `auth_user`
 # (see templates/pgbouncer.yaml.j2's auth_query) - never granted data access.
 # pg_exporter: `pg_monitor`, a distinct least-privilege scope from
 # pgadmin_ro's `pg_read_all_data`.
-- name: Ensure the fixed platform PG roles exist
-  community.postgresql.postgresql_user:
-    login_host: "{{ pg_conn_host }}"
-    login_user: postgres
-    login_password: "{{ _pg_superuser_password }}"
-    db: postgres
-    name: "{{ item.name }}"
-    password: "{{ item.password }}"
-    role_attr_flags: LOGIN
-  loop:
-    - {name: "{{ pgadmin_ro_role }}", password: "{{ _pgadmin_ro_password }}"}
-    - {name: "{{ backup_ro_role }}", password: "{{ _backup_ro_password }}"}
-    - {name: "{{ pgbouncer_auth_role }}", password: "{{ _pgbouncer_auth_password }}"}
-    - {name: "{{ pg_exporter_role }}", password: "{{ _pg_exporter_password }}"}
-  loop_control:
-    label: "{{ item.name }}"
+#
+# community.postgresql's postgresql_user gave this create-or-update
+# idempotence for free; hand-rolled below as a DO block with an existence
+# check per role, since _pg-exec.yml is just `psql < query` - no built-in
+# idempotence of its own. Role names come from defaults/main (fixed config
+# constants) and passwords are hash('sha256') hex digests (vars/main.yml) -
+# never raw user input - so plain string interpolation into the SQL text is
+# safe; don't reuse this unquoted-interpolation pattern for anything outside
+# that same closed set of values.
+- name: "Ensure the fixed platform PG roles exist"
+  vars:
+    query: >-
+      {% for r in [{'name': pgadmin_ro_role, 'password': _pgadmin_ro_password},
+                   {'name': backup_ro_role, 'password': _backup_ro_password},
+                   {'name': pgbouncer_auth_role, 'password': _pgbouncer_auth_password},
+                   {'name': pg_exporter_role, 'password': _pg_exporter_password}] %}
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ r.name }}') THEN
+          CREATE ROLE {{ r.name }} LOGIN PASSWORD '{{ r.password }}';
+        ELSE
+          ALTER ROLE {{ r.name }} LOGIN PASSWORD '{{ r.password }}';
+        END IF;
+      END $$;
+      {% endfor %}
+  ansible.builtin.import_tasks: _pg-exec.yml
   no_log: true
 
-- name: Grant the fixed platform roles their scoped privileges
-  community.postgresql.postgresql_membership:
-    login_host: "{{ pg_conn_host }}"
-    login_user: postgres
-    login_password: "{{ _pg_superuser_password }}"
-    db: postgres
-    group: "{{ item.group }}"
-    target_role: "{{ item.role }}"
-    state: present
-  loop:
-    - {role: "{{ pgadmin_ro_role }}", group: pg_read_all_data}
-    - {role: "{{ backup_ro_role }}", group: pg_read_all_data}
-    - {role: "{{ pg_exporter_role }}", group: pg_monitor}
-  loop_control:
-    label: "{{ item.role }}"
+# GRANT of a role membership is already idempotent (re-granting one a target
+# already holds is a no-op, not an error) - no DO block needed, unlike role
+# creation above.
+- name: "Grant the fixed platform roles their scoped privileges"
+  vars:
+    query: >-
+      GRANT pg_read_all_data TO {{ pgadmin_ro_role }};
+      GRANT pg_read_all_data TO {{ backup_ro_role }};
+      GRANT pg_monitor TO {{ pg_exporter_role }};
+  ansible.builtin.import_tasks: _pg-exec.yml
 
 # Standard "auth_query" recipe: pg_shadow is superuser-only, so PgBouncer's
 # auth_user goes through a SECURITY DEFINER wrapper function instead of a
 # static userlist (no userlist edits when pool roles are created/rotated).
-- name: Ensure the pgbouncer auth_query lookup function exists
-  community.postgresql.postgresql_query:
-    login_host: "{{ pg_conn_host }}"
-    login_user: postgres
-    login_password: "{{ _pg_superuser_password }}"
-    db: postgres
-    query: >
+- name: "Ensure the pgbouncer auth_query lookup function exists"
+  vars:
+    query: >-
       CREATE OR REPLACE FUNCTION public.pgbouncer_auth_lookup(uname text)
       RETURNS TABLE(usename name, passwd text) AS $$ SELECT usename, passwd
-      FROM pg_shadow WHERE usename = uname; $$ LANGUAGE sql SECURITY DEFINER
+      FROM pg_shadow WHERE usename = uname; $$ LANGUAGE sql SECURITY DEFINER;
+  ansible.builtin.import_tasks: _pg-exec.yml
 
-- name: Lock the lookup function down, then grant it to pgbouncer_auth only
-  community.postgresql.postgresql_query:
-    login_host: "{{ pg_conn_host }}"
-    login_user: postgres
-    login_password: "{{ _pg_superuser_password }}"
-    db: postgres
-    query: "REVOKE ALL ON FUNCTION public.pgbouncer_auth_lookup(text) FROM PUBLIC"
+- name: "Lock the lookup function down, then grant it to pgbouncer_auth only"
+  vars:
+    query: "REVOKE ALL ON FUNCTION public.pgbouncer_auth_lookup(text) FROM PUBLIC;"
+  ansible.builtin.import_tasks: _pg-exec.yml
 
-- name: Grant EXECUTE on the lookup function to pgbouncer_auth
-  community.postgresql.postgresql_privs:
-    login_host: "{{ pg_conn_host }}"
-    login_user: postgres
-    login_password: "{{ _pg_superuser_password }}"
-    db: postgres
-    type: function
-    objs: "pgbouncer_auth_lookup(text)"
-    privs: EXECUTE
-    role: "{{ pgbouncer_auth_role }}"
+- name: "Grant EXECUTE on the lookup function to pgbouncer_auth"
+  vars:
+    query: "GRANT EXECUTE ON FUNCTION public.pgbouncer_auth_lookup(text) TO {{ pgbouncer_auth_role }};"
+  ansible.builtin.import_tasks: _pg-exec.yml
 
 # The tenants.ini ConfigMap is normally OWNED by tasks/_sync-pgbouncer-tenants.yml
 # (a full desired-state regeneration from live IngressRoutes) - seeded here
