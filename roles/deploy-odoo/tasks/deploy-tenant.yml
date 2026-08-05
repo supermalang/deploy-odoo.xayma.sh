@@ -46,26 +46,49 @@
   register: _deploy_pg_info
   no_log: true
 
-- name: "Check whether the tenant database is already initialized [{{ tenant_name }}]"
+# Queries ir_module_module.state directly, not just whether the table
+# exists - a prior version of this check only tested table existence,
+# which Odoo creates and commits within seconds of ANY `-i` attempt
+# starting (loading `base` alone is enough), successful or not. Live
+# incident on fara-kho2: its first init crashed partway through (missing
+# `packaging` broke fs_storage's external_dependencies check - since
+# fixed), but `base` had already committed, so ir_module_module existed.
+# The NEXT deploy attempt saw that table, concluded "already
+# initialized", skipped init Job AND the closure check entirely (the
+# very check that would have caught the original problem), and went
+# straight to the fixup Job - which then crashed with `KeyError:
+# 'fs.storage'` because fs_storage itself was never actually installed.
+# Once a tenant hit this state it stayed wedged forever: every future
+# deploy kept skipping re-init and kept failing fixup the same way, even
+# after the underlying image was fixed. Checking that every module NAMED
+# in tenant_spec.init_modules is actually in the 'installed' set (not
+# just that SOME modules got that far) is the only way this guard can
+# tell "fully initialized" apart from "crashed five seconds in".
+- name: "Check which of this tenant's init_modules are actually marked installed [{{ tenant_name }}]"
   community.postgresql.postgresql_query:
     login_host: "{{ pg_conn_host }}"
     login_user: postgres
     login_password: "{{ _pg_superuser_password }}"
     db: "{{ instance_slug }}"
-    query: "SELECT 1 FROM information_schema.tables WHERE table_name = 'ir_module_module'"
+    query: "SELECT name FROM ir_module_module WHERE state = 'installed'"
   register: _deploy_init_check
   when: instance_slug in (_deploy_pg_info.databases | default({}))
   failed_when: false
   no_log: true
 
-# Idempotency guard (see README "Actions"): db exists AND contains
-# ir_module_module -> skip init; exists but empty -> init allowed; missing
-# -> create + init. An already-initialized db is NEVER re-init'd.
+# Idempotency guard (see README "Actions"): db exists AND every
+# tenant_spec.init_modules entry is already marked 'installed' -> skip
+# init; db missing, or it exists but ir_module_module doesn't yet (fresh/
+# empty), or ANY init_modules entry isn't installed yet (a prior attempt
+# crashed partway through) -> init allowed/required. An already-fully-
+# initialized db is NEVER re-init'd.
 - name: "Determine whether the one-shot init Job must run [{{ tenant_name }}]"
   ansible.builtin.set_fact:
     _deploy_needs_init: >-
       {{ (instance_slug not in (_deploy_pg_info.databases | default({})))
-         or ((_deploy_init_check.rowcount | default(0) | int) == 0) }}
+         or (tenant_spec.init_modules.split(',')
+             | difference(_deploy_init_check.query_result | default([]) | map(attribute='name') | list)
+             | length > 0) }}
 
 - name: "Apply the tenant's ADMIN_PASSWD Secret [{{ tenant_name }}]"
   kubernetes.core.k8s:
