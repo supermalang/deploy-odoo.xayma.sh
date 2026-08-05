@@ -133,6 +133,44 @@
 - name: "Run the one-shot init Job [{{ tenant_name }}]"
   when: _deploy_needs_init | bool
   block:
+    # init-{{ instance_slug }}'s Job spec.template is IMMUTABLE once
+    # created - a Kubernetes invariant on Jobs, not something this role
+    # controls. Any change to what this pod template renders to between
+    # two deploy attempts (a new image tag, a different odoo.conf
+    # ConfigMap name, an added volume, ...) makes a re-apply against an
+    # EXISTING Job of this name fail outright with "field is invalid:
+    # spec.template: ... field is immutable", wedging the tenant until
+    # someone deletes the Job by hand. Live incident: fara-kho2 - a fixed
+    # odoo.conf bug changed this pod template between two runs, and the
+    # second run's apply failed on exactly this. Deleting any existing
+    # Job of this name FIRST, unconditionally, before every apply - not
+    # only after detecting a failure - closes this for good: the "Wait
+    # for the init Job"/"Surface... pod logs on failure" steps below
+    # already put a failed run's logs into the AWX output at the moment
+    # it happened, so deleting it on the NEXT run discards nothing.
+    # `wait: true` so its pod(s) are gone too, not just the Job object,
+    # before the apply below creates a fresh one. Deleting a Job that
+    # doesn't exist yet (the common case - first init for a tenant) is a
+    # no-op, not an error.
+    #
+    # Kept the deterministic (non-timestamped) name deliberately, unlike
+    # the preflight/closure-check Jobs (_assert-addons-repo.yml/
+    # _assert-init-modules.yml), which timestamp themselves because THEY
+    # delete themselves as part of their own success path and may run
+    # more than once per deploy attempt - a fixed, guessable name here
+    # means `kubectl logs job/init-<slug>` stays meaningful for as long
+    # as the Job survives ttlSecondsAfterFinished, which matters more for
+    # this one-per-tenant, run-once-per-lifetime Job than for those.
+    - name: "Delete any existing init Job before applying (spec.template is immutable) [{{ tenant_name }}]"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: absent
+        api_version: batch/v1
+        kind: Job
+        namespace: "{{ xayma_namespace }}"
+        name: "init-{{ instance_slug }}"
+        wait: true
+
     - name: "Apply the init Job [{{ tenant_name }}]"
       kubernetes.core.k8s:
         kubeconfig: "{{ kubeconfig_path }}"
