@@ -2,39 +2,56 @@
 # include_tasks helper (only when the init Job is actually about to run -
 # see deploy-tenant.yml) - fails fast if any module tenant_spec.init_modules
 # needs, INCLUDING every module transitively pulled in by their own
-# `depends`, isn't present anywhere Odoo would actually look for it, rather
-# than letting `odoo -i` partially fail deep inside a batch-low Job.
+# `depends` AND every package/binary named in their own
+# `external_dependencies`, isn't actually satisfiable, rather than letting
+# `odoo -i` partially fail deep inside a batch-low Job.
 #
-# Walks the full dependency closure, not just the listed modules - a prior
-# version of this check only verified each LISTED module existed
-# somewhere, which let fs_storage pass (fs_storage itself is vendored,
-# real, present) while its own __manifest__.py depends on
-# server_environment, which wasn't on the addons path at all. That gap
-# surfaced two minutes later as a `UserError` inside the init Job itself -
-# exactly the "deep inside a batch-low Job" failure this check exists to
-# prevent, just one dependency level further down than it was checking.
+# This check has needed fixing three times so far, each time one layer
+# past where the previous fix stopped:
+#   1. Originally verified each LISTED module existed somewhere, which let
+#      fs_storage pass (fs_storage itself is vendored, real, present)
+#      while its own __manifest__.py depends on server_environment, which
+#      wasn't on the addons path at all - surfaced as a `UserError` deep
+#      inside the init Job. Fixed by walking the full `depends` closure,
+#      not just the listed modules.
+#   2. The closure walk itself rebuilt its expected addons_path from
+#      odoo.oca_repos directly - the same source data a corrupted
+#      pool-configmap.yaml.j2 template ALSO used - so it validated INTENT,
+#      not the ARTIFACT, and passed cleanly on a live run where the
+#      rendered ConfigMap's real addons_path was actually missing an
+#      entry (a trim_blocks/block-tag bug - see that template's
+#      addons_path comment). Fixed by parsing addons_path OUT OF the
+#      pool's own rendered odoo.conf ConfigMap instead of re-deriving it.
+#   3. The closure walk checked `depends` (module presence) but not
+#      `external_dependencies` (Python packages/binaries a present,
+#      correctly-found module still needs) - passed cleanly on a run
+#      where every module WAS present but the image was missing the
+#      `packaging` library fs_storage/fs_attachment/fs_attachment_s3's
+#      own fsspec version-specifier dependencies need to even be parsed,
+#      which then failed deep inside the init Job exactly like case 1.
+#      Fixed by resolving each visited module's external_dependencies too
+#      - see check_python_external_dependency below.
+# The pattern across all three: this check is only as good as how
+# faithfully it reproduces what Odoo will ACTUALLY do when it loads these
+# modules for real - never re-derive/approximate, always read or execute
+# the real thing.
 #
 # SEARCH_PATHS is built from the POOL'S OWN RENDERED odoo.conf
 # (_fileops_configmap_name mounts pool_config_name at /pool-config below),
 # parsed for its real addons_path value with the same configparser Odoo
-# itself uses - NOT re-derived from odoo.oca_repos a second time. A prior
-# version of this script rebuilt the expected addons_path from
-# odoo.oca_repos directly, which validated INTENT, not the ARTIFACT: it
-# passed cleanly on a live run where the rendered ConfigMap's addons_path
-# was actually corrupted (a trim_blocks/block-tag bug in
-# pool-configmap.yaml.j2 silently dropped the OCA/server-env entry - see
-# that template's addons_path comment), because this check was computing
-# its OWN, unaffected copy of the same list and comparing it to itself.
-# Testing what Odoo will ACTUALLY load is the only way this check can
-# catch that class of bug again.
+# itself uses.
 #
 # Runs from the REAL odoo image, not busybox - a bare-modules Job needs
 # visibility into Odoo's own bundled addons paths (base, web, mail, ...),
-# not just the freshly cloned addons repos. Checking only the cloned repos
-# used to false-positive on every bundled module ("MISSING: base") since
-# those never live there at all - they ship inside the image itself.
-# Bundled paths are checked FIRST, the parsed-from-ConfigMap paths only as
-# fallbacks for what isn't bundled - same ordering as before.
+# not just the freshly cloned addons repos, AND needs the exact same
+# Python packages (including `packaging` itself - see
+# files/odoo-image/Dockerfile's comment) installed that a real `odoo -i`
+# run would see, for the external_dependencies check below to mean
+# anything. Checking only the cloned repos used to false-positive on
+# every bundled module ("MISSING MODULE: base") since those never live
+# there at all - they ship inside the image itself. Bundled paths are
+# checked FIRST, the parsed-from-ConfigMap paths only as fallbacks for
+# what isn't bundled - same ordering as before.
 - name: "Run the addons-path module-dependency-closure check [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -43,7 +60,12 @@
     template: job-fileops.yaml.j2
   vars:
     _fileops_name: "check-modules-{{ instance_slug }}-{{ ansible_date_time.iso8601_basic_short | lower }}"
-    _fileops_image: "{{ odoo_image_repo }}:{{ version }}.0"
+    # odoo_image_tag (content-derived - see _ensure-odoo-image.yml's
+    # header comment), NOT a hand-built "{{ version }}.0" - this check
+    # must run against the EXACT image the pool's own pods run, or it can
+    # pass cleanly against a different, stale image than the one that
+    # will actually try to load these modules.
+    _fileops_image: "{{ odoo_image_repo }}:{{ odoo_image_tag }}"
     _fileops_clone_addons: true
     # Mounts pool_config_name (the SAME ConfigMap pool-configmap.yaml.j2
     # renders and every pool pod's render-config initContainer sed's into
@@ -62,8 +84,71 @@
       python3 - <<'PYEOF'
       import ast
       import configparser
+      import importlib
+      import importlib.metadata
       import os
+      import re
+      import shutil
       import sys
+
+      # Same fallback `packaging` isn't installed in module.py itself
+      # (odoo/modules/module.py, 19.0) - reused here so a bare name (no
+      # version specifier/extra) still resolves even without `packaging`,
+      # while anything with a specifier raises the identical message Odoo
+      # itself would. `packaging` IS installed in this image (see
+      # files/odoo-image/Dockerfile) so this fallback should never
+      # actually trigger in practice; kept for parity with the real
+      # source, not because it's expected to run.
+      try:
+          from packaging.requirements import InvalidRequirement, Requirement
+      except ImportError:
+          class InvalidRequirement(Exception):
+              pass
+
+          class Requirement:
+              def __init__(self, pydep):
+                  if not re.fullmatch(r'[\w\-]+', pydep):
+                      raise Exception(
+                          "packaging is required to parse '%s' external "
+                          "dependency and is not installed" % pydep)
+                  self.marker = None
+                  self.specifier = None
+                  self.name = pydep
+
+      def check_python_external_dependency(pydep):
+          # Mirrors odoo/modules/module.py's check_python_external_dependency
+          # (fetched from the real 19.0 source and verified against it) so
+          # this fails on EXACTLY the entries `odoo -i` itself would fail
+          # on, not a looser or stricter approximation of them. Odoo's own
+          # code only catches InvalidRequirement here, which means the
+          # ORIGINAL live incident (packaging itself missing) actually
+          # crashed odoo -i with an unhandled Exception rather than a
+          # clean MissingDependency - reproduced and confirmed by running
+          # this exact function without packaging installed. Catching the
+          # broader Exception here (not just InvalidRequirement) is a
+          # deliberate improvement over that: this check's whole purpose
+          # is a clean, attributable failure message, not a faithful
+          # reproduction of Odoo's own crash.
+          try:
+              requirement = Requirement(pydep)
+          except InvalidRequirement as exc:
+              return "invalid external dependency specification: %s" % exc
+          except Exception as exc:
+              return str(exc)
+          if requirement.marker and not requirement.marker.evaluate():
+              return None
+          try:
+              version = importlib.metadata.version(requirement.name)
+          except importlib.metadata.PackageNotFoundError:
+              try:
+                  importlib.import_module(pydep)
+                  return None
+              except ImportError:
+                  pass
+              return "not installed"
+          if requirement.specifier and not requirement.specifier.contains(version):
+              return "version mismatch (installed: %s)" % version
+          return None
 
       BUNDLED_PATHS = [
           "/usr/lib/python3/dist-packages/odoo/addons",
@@ -88,8 +173,8 @@
               conf.read_file(f)
           addons_path = conf.get("options", "addons_path")
       except Exception as exc:
-          print("MISSING: could not read/parse addons_path from the pool's "
-                "own rendered odoo.conf (/pool-config/odoo.conf): %s" % exc)
+          print("MISSING CONFIG: could not read/parse addons_path from the "
+                "pool's own rendered odoo.conf (/pool-config/odoo.conf): %s" % exc)
           sys.exit(1)
 
       SEARCH_PATHS = BUNDLED_PATHS + [
@@ -114,24 +199,41 @@
           visited.add(mod)
           path = find_manifest(mod)
           if path is None:
-              missing.append((mod, required_by))
+              missing.append("MISSING MODULE: %s (%s)" % (
+                  mod, ("required by %s" % required_by) if required_by else "listed in init_modules"))
               continue
           try:
               with open(path) as f:
                   manifest = ast.literal_eval(f.read())
           except Exception as exc:
-              missing.append((mod, "unparsable manifest at %s: %s" % (path, exc)))
+              missing.append("MISSING MODULE: %s (unparsable manifest at %s: %s)" % (mod, path, exc))
               continue
           for dep in manifest.get("depends", []):
               if dep not in visited:
                   queue.append((dep, mod))
+          # external_dependencies["python"] - resolved the same way Odoo
+          # itself resolves them (see check_python_external_dependency
+          # above), not just "does a package with this name exist
+          # somewhere" - a version-mismatched or extras-missing install
+          # would otherwise pass this check and still fail identically to
+          # a missing one once `odoo -i` actually tries to load it.
+          external = manifest.get("external_dependencies") or {}
+          for pydep in external.get("python", []):
+              problem = check_python_external_dependency(pydep)
+              if problem:
+                  missing.append("MISSING PYTHON PACKAGE: %s (%s - required by %s)" % (pydep, problem, mod))
+          # external_dependencies["bin"] - checked via PATH lookup, same
+          # as odoo/modules/module.py's own check (tools.find_in_path),
+          # not skipped: no manifest in the current init closure declares
+          # one, but a future OCA module might, and PATH lookup is cheap
+          # and exact enough to just do rather than defer.
+          for binary in external.get("bin", []):
+              if shutil.which(binary) is None:
+                  missing.append("MISSING BINARY: %s (required by %s)" % (binary, mod))
 
       if missing:
-          for mod, required_by in missing:
-              if required_by:
-                  print("MISSING: %s (required by %s)" % (mod, required_by))
-              else:
-                  print("MISSING: %s (listed in init_modules)" % mod)
+          for line in missing:
+              print(line)
           sys.exit(1)
       print("OK")
       PYEOF
@@ -168,15 +270,18 @@
     namespace: "{{ xayma_namespace }}"
     name: "{{ _checkmod_job.result.metadata.name }}"
 
-- name: "Assert every init_modules entry AND its full dependency closure exists in the addons path [{{ tenant_name }}]"
+- name: "Assert every init_modules entry, its full dependency closure, and their external_dependencies are satisfiable [{{ tenant_name }}]"
   ansible.builtin.assert:
     that: "'MISSING' not in (_checkmod_logs.log | default(''))"
     fail_msg: >-
-      One or more modules required to init {{ tenant_name }} (plan={{ plan }}:
-      {{ tenant_spec.init_modules }}, including transitive dependencies) do
-      not exist anywhere on the addons path - {{ _checkmod_logs.log | default('') }}.
-      Each MISSING line names the module and, if it's a transitive
-      dependency rather than a top-level init_modules entry, which
-      manifest actually requires it. Push the missing module to
-      odoo.addons_repo_url, add its upstream repo to odoo.oca_repos, or
-      correct the module name before retrying.
+      One or more modules/packages/binaries required to init
+      {{ tenant_name }} (plan={{ plan }}: {{ tenant_spec.init_modules }},
+      including transitive dependencies) are not satisfiable -
+      {{ _checkmod_logs.log | default('') }}. MISSING MODULE means the
+      module itself isn't on the addons path; MISSING PYTHON PACKAGE/
+      MISSING BINARY means the module IS present but a package/binary its
+      own external_dependencies declares isn't - each names the
+      module/manifest that actually requires it. Push the missing module
+      to odoo.addons_repo_url, add its upstream repo to odoo.oca_repos,
+      add the missing Python package to files/odoo-image/Dockerfile, or
+      correct the name before retrying.
