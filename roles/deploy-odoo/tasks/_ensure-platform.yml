@@ -69,7 +69,7 @@
     - {name: "{{ pg_exporter_role }}", password: "{{ _pg_exporter_password }}"}
   loop_control:
     label: "{{ item.name }}"
-  no_log: false  # TEMP DEBUG - see conversation; revert once the real error is captured
+  no_log: true
 
 - name: Grant the fixed platform roles their scoped privileges
   community.postgresql.postgresql_membership:
