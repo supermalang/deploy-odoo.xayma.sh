@@ -13,23 +13,28 @@
 # surfaced two minutes later as a `UserError` inside the init Job itself -
 # exactly the "deep inside a batch-low Job" failure this check exists to
 # prevent, just one dependency level further down than it was checking.
-# Every addons-path entry is walked (Odoo's own bundled paths first, then
-# the tenant's private addons_repo_url, then every odoo.oca_repos entry -
-# same list pool-configmap.yaml.j2's addons_path and
-# _assert-addons-repo.yml derive from, not repeated by hand here) so a
-# missing transitive dependency anywhere in that chain is caught here,
-# with the missing module AND the manifest that required it named, not
-# just the top-level modules tenant_spec.init_modules actually lists.
+#
+# SEARCH_PATHS is built from the POOL'S OWN RENDERED odoo.conf
+# (_fileops_configmap_name mounts pool_config_name at /pool-config below),
+# parsed for its real addons_path value with the same configparser Odoo
+# itself uses - NOT re-derived from odoo.oca_repos a second time. A prior
+# version of this script rebuilt the expected addons_path from
+# odoo.oca_repos directly, which validated INTENT, not the ARTIFACT: it
+# passed cleanly on a live run where the rendered ConfigMap's addons_path
+# was actually corrupted (a trim_blocks/block-tag bug in
+# pool-configmap.yaml.j2 silently dropped the OCA/server-env entry - see
+# that template's addons_path comment), because this check was computing
+# its OWN, unaffected copy of the same list and comparing it to itself.
+# Testing what Odoo will ACTUALLY load is the only way this check can
+# catch that class of bug again.
 #
 # Runs from the REAL odoo image, not busybox - a bare-modules Job needs
 # visibility into Odoo's own bundled addons paths (base, web, mail, ...),
 # not just the freshly cloned addons repos. Checking only the cloned repos
 # used to false-positive on every bundled module ("MISSING: base") since
 # those never live there at all - they ship inside the image itself.
-# Bundled paths are checked FIRST, the cloned repos (the tenant's own
-# addons_repo_url, then every odoo.oca_repos entry - see fs_storage/
-# fs_attachment/fs_attachment_s3/server_environment in
-# tasks/_resolve-plan-spec.yml) only as fallbacks for what isn't bundled.
+# Bundled paths are checked FIRST, the parsed-from-ConfigMap paths only as
+# fallbacks for what isn't bundled - same ordering as before.
 - name: "Run the addons-path module-dependency-closure check [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -40,6 +45,11 @@
     _fileops_name: "check-modules-{{ instance_slug }}-{{ ansible_date_time.iso8601_basic_short | lower }}"
     _fileops_image: "{{ odoo_image_repo }}:{{ version }}.0"
     _fileops_clone_addons: true
+    # Mounts pool_config_name (the SAME ConfigMap pool-configmap.yaml.j2
+    # renders and every pool pod's render-config initContainer sed's into
+    # its own odoo.conf) read-only at /pool-config - see job-fileops.yaml.j2's
+    # header comment for _fileops_configmap_name.
+    _fileops_configmap_name: "{{ pool_config_name }}"
     # `python3 -` (not a `python3 <<'PYEOF'` heredoc) - the script needs no
     # shell interpolation at all (every dynamic value is rendered by
     # Ansible's own Jinja templating below, not by the remote shell), and
@@ -51,16 +61,39 @@
     _fileops_command: |-
       python3 - <<'PYEOF'
       import ast
+      import configparser
       import os
       import sys
 
-      SEARCH_PATHS = [
+      BUNDLED_PATHS = [
           "/usr/lib/python3/dist-packages/odoo/addons",
           "/usr/lib/python3/dist-packages/addons",
-          "/addons",
-      {% for repo in odoo.oca_repos %}
-          "/oca-{{ repo.name }}",
-      {% endfor %}
+      ]
+
+      # addons_path entries are /opt/extra-addons or /opt/oca-{name} - the
+      # MOUNT PATHS inside the pool's own odoo/init/fixup containers, not
+      # where THIS check Job's clone-addons/clone-oca-* initContainers
+      # staged the identical content (no /opt/ prefix here - see
+      # job-fileops.yaml.j2's _fileops_clone_addons volumes). Map by the
+      # final path component: "extra-addons" -> /addons (this Job's own
+      # tenant-repo clone), anything else -> /{that-name} (this Job's own
+      # clone-oca-{name}).
+      def to_local_path(opt_path):
+          name = opt_path.rstrip("/").rsplit("/", 1)[-1]
+          return "/addons" if name == "extra-addons" else "/" + name
+
+      try:
+          conf = configparser.RawConfigParser()
+          with open("/pool-config/odoo.conf") as f:
+              conf.read_file(f)
+          addons_path = conf.get("options", "addons_path")
+      except Exception as exc:
+          print("MISSING: could not read/parse addons_path from the pool's "
+                "own rendered odoo.conf (/pool-config/odoo.conf): %s" % exc)
+          sys.exit(1)
+
+      SEARCH_PATHS = BUNDLED_PATHS + [
+          to_local_path(p.strip()) for p in addons_path.split(",") if p.strip()
       ]
       START_MODULES = {{ tenant_spec.init_modules.split(',') | to_json }}
 

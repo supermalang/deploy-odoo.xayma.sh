@@ -14,7 +14,12 @@
 # uses (the `rm -rf` before `git init` in each - see that template's
 # clone-addons comment for why - applies here too, defensively, even
 # though this Job's restartPolicy: Never means kubelet never restarts a
-# container in-place).
+# container in-place). `_fileops_configmap_name` (unset by default) - set
+# to a ConfigMap name to mount it read-only at /pool-config, one file per
+# data key - _assert-init-modules.yml uses this to read the POOL's actual
+# rendered odoo.conf (not re-derive what it SHOULD contain from role vars
+# again - see that task's own header comment for why that distinction is
+# the whole point).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -78,18 +83,24 @@ spec:
         - name: fileops
           image: "{{ _fileops_image | default('busybox:' ~ versions.busybox) }}"
           command: ["sh", "-c", {{ _fileops_command | to_json }}]
-{% if _fileops_clone_addons | default(false) %}
+{% if _fileops_clone_addons | default(false) or _fileops_configmap_name is defined %}
           volumeMounts:
+{% if _fileops_clone_addons | default(false) %}
             - {name: addons, mountPath: /addons}
 {% for repo in odoo.oca_repos %}
             - {name: "oca-{{ repo.name }}", mountPath: "/oca-{{ repo.name }}"}
 {% endfor %}
 {% endif %}
+{% if _fileops_configmap_name is defined %}
+            - {name: pool-config, mountPath: /pool-config, readOnly: true}
+{% endif %}
+{% endif %}
           resources:
             requests: {cpu: 50m, memory: 64Mi}
             limits: {cpu: 200m, memory: 128Mi}
-{% if _fileops_clone_addons | default(false) %}
+{% if _fileops_clone_addons | default(false) or _fileops_configmap_name is defined %}
       volumes:
+{% if _fileops_clone_addons | default(false) %}
         - {name: addons, emptyDir: {}}
 {% for repo in odoo.oca_repos %}
         - {name: "oca-{{ repo.name }}", emptyDir: {}}
@@ -98,4 +109,8 @@ spec:
           secret:
             secretName: "{{ addons_deploy_key_secret_name }}"
             defaultMode: 0400
+{% endif %}
+{% if _fileops_configmap_name is defined %}
+        - {name: pool-config, configMap: {name: "{{ _fileops_configmap_name }}"}}
+{% endif %}
 {% endif %}
