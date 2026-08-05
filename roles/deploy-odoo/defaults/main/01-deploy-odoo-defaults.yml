@@ -266,7 +266,30 @@ postgres:
   # delete the `pg` StatefulSet + its `data-pg-0` PVC, set this, redeploy
   # (recreates Postgres fresh/empty on the new node), then
   # odoo_action=restore per tenant.
-  node_selector: {}
+  #
+  # Pinned to the control-plane node so community.postgresql's HOST-network
+  # tasks stay same-node with pg-0 - see templates/networkpolicies-
+  # platform.yaml.j2's `allow-to-pg` header comment for why cross-node
+  # otherwise means default-deny-ingress blocks them outright.
+  #
+  # DO NOT MERGE/DEPLOY THIS VALUE without both of the following holding on
+  # the target cluster - neither does, as of this comment:
+  #   1. install-platform.xayma.sh must have already labelled the
+  #      control-plane node `xayma.sh/node-role=platform` - only its
+  #      k3s-agent.yml labels a node today (workers, `tenants`), so right now
+  #      NO node carries `platform` and pg-0 would go Pending with no
+  #      explanatory event, not fail loudly.
+  #   2. same-node host->pod traffic must actually bypass kube-router's
+  #      per-pod chains (unverified - cross-node traffic provably does NOT,
+  #      that's this whole incident). If kube-router polices same-node
+  #      traffic too, this pin changes nothing and the NetworkPolicy fix
+  #      (`allowed_host_cidrs` below) or moving the SQL in-cluster
+  #      (_pg-exec.yml) are the only fixes that can work.
+  # This is CHEAP ONLY RIGHT NOW: pg-0 holds no tenant data yet, so applying
+  # this and letting the StatefulSet reschedule pg-0 costs nothing. The
+  # moment any tenant exists, applying this becomes the backup/restore
+  # runbook two paragraphs up, not a config change.
+  node_selector: {'xayma.sh/node-role': 'platform'}
   # `allow-to-pg` (templates/networkpolicies-platform.yaml.j2) admits every
   # in-cluster caller by pod/namespaceSelector, but community.postgresql's
   # tasks connect from the CONTROL NODE's HOST network namespace - packets
@@ -296,6 +319,13 @@ postgres:
 # tasks/_sync-pgbouncer-tenants.yml), so unlike postgres.node_selector above,
 # changing this and redeploying is genuinely all it takes to move it - no
 # data to strand.
+#
+# Deliberately NOT pinned alongside postgres.node_selector. PgBouncer reaches
+# Postgres pod-to-pod (podSelector-matched, real pod identity), not from the
+# host network namespace - `nc -zv pg 5432` from pgbouncer-0 already
+# succeeds cross-node today, which is how this incident's diagnosis ruled out
+# a pgbouncer->pg problem in the first place. Co-locating it with Postgres
+# would only ever be a locality/latency choice, never a connectivity fix.
 pgbouncer:
   default_pool_size: 5
   max_client_conn: 2000
@@ -329,6 +359,11 @@ redis:
   # unlike Postgres, moving it is just: set this, redeploy, then delete the
   # now-orphaned old PVC (`data-redis-0`) so the StatefulSet provisions a
   # fresh one on the new node - no backup/restore needed first.
+  #
+  # Not pinned alongside postgres.node_selector for the same reason
+  # pgbouncer.node_selector isn't, above: every pool pod reaches Redis
+  # pod-to-pod, never from the host network namespace, so its connectivity
+  # doesn't depend on which node it's on.
   node_selector: {}
 
 # The stock Docker Hub `odoo` image does NOT include the `redis` Python
