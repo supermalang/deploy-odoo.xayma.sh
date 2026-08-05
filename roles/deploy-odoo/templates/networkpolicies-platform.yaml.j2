@@ -103,6 +103,15 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: postgres-exporter
+{% for cidr in postgres.allowed_host_cidrs | default([]) %}
+        # HOST-network caller (community.postgresql from the control node) -
+        # see defaults/main/01-deploy-odoo-defaults.yml's
+        # `postgres.allowed_host_cidrs` header comment for what this address
+        # actually is and how it was measured. podSelector/namespaceSelector
+        # cannot match this traffic at all - it carries no pod identity.
+        - ipBlock:
+            cidr: {{ cidr }}
+{% endfor %}
       ports:
         - port: 5432
 ---

@@ -267,6 +267,29 @@ postgres:
   # (recreates Postgres fresh/empty on the new node), then
   # odoo_action=restore per tenant.
   node_selector: {}
+  # `allow-to-pg` (templates/networkpolicies-platform.yaml.j2) admits every
+  # in-cluster caller by pod/namespaceSelector, but community.postgresql's
+  # tasks connect from the CONTROL NODE's HOST network namespace - packets
+  # with no pod identity, which no selector can ever match, so
+  # default-deny-ingress blocks them outright regardless of where pg-0 is
+  # scheduled. This list adds ipBlock entries to `allow-to-pg` for exactly
+  # those callers. NetworkPolicy has no "the cluster's nodes" concept -
+  # ipBlock only takes literal CIDRs - so this is inherently a hand-maintained
+  # list, one /32 per node ansible_host/community.postgresql ever runs
+  # against, not the cluster's pod or node CIDR (either would let far more
+  # than the control node reach Postgres directly and mostly defeat the
+  # policy).
+  #
+  # MUST be the address Postgres actually sees as the source after
+  # kube-router's masquerade - NOT the node's private-network IP fact. Measure
+  # it before populating this (temporarily set log_connections=on on pg and
+  # read its logs for a real connection, or watch `conntrack -L` on the
+  # target node while connecting from the source node); do not guess. Empty
+  # by default, so an unmeasured deploy grants nothing extra rather than
+  # something wrong. Adding a k3s node that will run this role means
+  # re-measuring and appending its /32 here, then redeploying (picked up on
+  # the next odoo_action=deploy - see _ensure-platform.yml).
+  allowed_host_cidrs: []
 
 # PgBouncer (transaction-mode pooling in front of the shared Postgres) - no
 # PVC at all (its state, tenants.ini, is externalized to a ConfigMap - see
