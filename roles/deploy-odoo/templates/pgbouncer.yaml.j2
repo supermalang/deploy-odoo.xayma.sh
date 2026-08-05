@@ -24,6 +24,25 @@ data:
     auth_type = scram-sha-256
     auth_user = {{ pgbouncer_auth_role }}
     auth_query = SELECT usename, passwd FROM public.pgbouncer_auth_lookup($1)
+    # auth_dbname - PgBouncer's own docs (doc/config.md, "auth_query"):
+    # "the query is run inside the target database. So if a function is
+    # used, it needs to be installed into each database." Without this,
+    # PgBouncer opens a backend connection to the TENANT's own database
+    # (as auth_user) just to run auth_query there - but pgbouncer_auth_lookup()
+    # only exists in `postgres` (see _ensure-platform.yml, where it's
+    # created and EXECUTE-granted), and REVOKE CONNECT FROM PUBLIC on every
+    # tenant database (deploy-tenant.yml, per-tenant DB isolation) means
+    # pgbouncer_auth has no way to even connect to run it - confirmed live:
+    # "FATAL permission denied for database" in PgBouncer's own log, for a
+    # connection literally logged as `<dbname>/pgbouncer_auth`, the moment
+    # a brand-new tenant's first request hit the http pool (which is the
+    # only Deployment that goes through PgBouncer at all - cron/gevent/
+    # init/fixup all connect directly to Postgres, which is exactly why
+    # this stayed hidden through every other stage of a deploy). Pointing
+    # every auth_query lookup at `postgres` instead - where the function
+    # and its grants already correctly live - avoids having to install/
+    # grant it into every tenant database individually.
+    auth_dbname = postgres
     auth_file = /etc/pgbouncer/userlist.txt
     pool_mode = transaction
     default_pool_size = {{ pgbouncer.default_pool_size }}
