@@ -261,6 +261,17 @@
       - "job-name={{ _checkmod_job.result.metadata.name }}"
   register: _checkmod_logs
 
+# propagationPolicy explicit, NOT left to the API server's default - the
+# default for a raw API delete (this module, and anything else that isn't
+# `kubectl` itself) is Orphan, not Background. `kubectl delete` only looks
+# like it cleans up a Job's Pods because kubectl hard-codes Background
+# propagation client-side - that's a kubectl behavior, not a server
+# default. Without this, the Job object goes away but its Pod's
+# ownerReference dangles and nothing ever cleans it up (a bare Pod has no
+# TTL of its own) - this is why check-modules-* Pods were observed
+# surviving for hours after their Job had already been "deleted". `wait:
+# true` so this task actually confirms the deletion completed instead of
+# just accepting the request and moving on.
 - name: "Delete the module-dependency-closure check Job [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -269,6 +280,9 @@
     kind: Job
     namespace: "{{ xayma_namespace }}"
     name: "{{ _checkmod_job.result.metadata.name }}"
+    delete_options:
+      propagationPolicy: Background
+    wait: true
 
 - name: "Assert every init_modules entry, its full dependency closure, and their external_dependencies are satisfiable [{{ tenant_name }}]"
   ansible.builtin.assert:

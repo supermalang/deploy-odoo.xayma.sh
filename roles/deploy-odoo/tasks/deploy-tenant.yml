@@ -171,10 +171,16 @@
     # for the init Job"/"Surface... pod logs on failure" steps below
     # already put a failed run's logs into the AWX output at the moment
     # it happened, so deleting it on the NEXT run discards nothing.
-    # `wait: true` so its pod(s) are gone too, not just the Job object,
-    # before the apply below creates a fresh one. Deleting a Job that
-    # doesn't exist yet (the common case - first init for a tenant) is a
-    # no-op, not an error.
+    # `wait: true` only confirms the Job OBJECT is gone before the apply
+    # below creates a fresh one - it says nothing about its Pod(s). That's
+    # `delete_options.propagationPolicy` alone: left unspecified, a raw API
+    # delete (this module, not `kubectl`) defaults to Orphan, not
+    # Background - `kubectl delete` only looks like it cleans up a Job's
+    # Pods because kubectl hard-codes Background client-side, a kubectl
+    # behavior, not a server default. Explicit here so the stale Pod is
+    # actually gone too, not left dangling with no owner and no TTL of its
+    # own to ever clean it up. Deleting a Job that doesn't exist yet (the
+    # common case - first init for a tenant) is a no-op, not an error.
     #
     # Kept the deterministic (non-timestamped) name deliberately, unlike
     # the preflight/closure-check Jobs (_assert-addons-repo.yml/
@@ -192,6 +198,8 @@
         kind: Job
         namespace: "{{ xayma_namespace }}"
         name: "init-{{ instance_slug }}"
+        delete_options:
+          propagationPolicy: Background
         wait: true
 
     - name: "Apply the init Job [{{ tenant_name }}]"
