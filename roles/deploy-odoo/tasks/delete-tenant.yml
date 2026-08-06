@@ -95,6 +95,27 @@
       may still exist (see README "Backups & Restore") - re-run
       odoo_action=delete to retry the purge alone.
 
+# propagationPolicy explicit (same reasoning as _assert-addons-repo.yml/
+# _assert-init-modules.yml/deploy-tenant.yml's init pre-delete) - left
+# unspecified, a raw API delete defaults to Orphan, not Background, so the
+# Job entry in this loop (init-<tenant>/fixup-<tenant>-*/check-modules-
+# <tenant>-* - this tenant's WHOLE Job history, matched by label) would
+# delete every Job object while orphaning each one's Pod. For a tenant
+# being deleted, that leaves dead Pods for a tenant that no longer exists
+# anywhere else in the system - worse than the check-*/preflight case,
+# since there's no live IngressRoute/Certificate left to even associate
+# them back to. A no-op for the other four kinds in this loop (IngressRoute/
+# Middleware/Certificate/Secret own no dependents to cascade to), applied
+# uniformly since `delete_options` is shared across every item.
+#
+# `wait: true` added too - the comment below ("Regenerated AFTER the
+# IngressRoute above is gone") already assumed this delete was synchronous,
+# but nothing before this enforced that: without `wait`, this task returns
+# as soon as the delete is ACCEPTED, not once the objects are actually
+# gone, and the next two steps both read live IngressRoutes back (by label)
+# to decide the pgbouncer regen + whether to scale the pool to 0 - a race
+# against a still-in-flight deletion could see this tenant's IngressRoute
+# as still present.
 - name: "Delete all labelled resources for this tenant [{{ tenant_name }}]"
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -105,6 +126,9 @@
     label_selectors:
       - "xayma.sh/customer={{ customer_slug }}"
       - "xayma.sh/instance={{ instance_slug }}"
+    delete_options:
+      propagationPolicy: Background
+    wait: true
   loop:
     - {api_version: batch/v1, kind: Job}
     - {api_version: traefik.io/v1alpha1, kind: IngressRoute}
