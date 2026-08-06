@@ -43,14 +43,32 @@ spec:
       restartPolicy: Never
       priorityClassName: {{ priorityclass.name }}
       initContainers:
-        # No shared PVC - see pool-deployments.yaml.j2's clone-addons for the
-        # rationale; this Job needs the same addons content the pool it's
-        # initializing into will run with. The `rm -rf` before `git init`
-        # below matters here too, defensively, even though this Job's
+        # ONE initContainer cloning the addons repo + every odoo.oca_repos
+        # entry IN PARALLEL (backgrounded subshells + `wait`), not one
+        # initContainer per repo - Kubernetes runs initContainers strictly
+        # sequentially, never concurrently with each other, so N separate
+        # git-clone initContainers means N round trips paid one after
+        # another; one initContainer running N git fetches at once pays
+        # roughly max(fetch time) instead of sum(fetch time). No shared PVC
+        # (see pool-deployments.yaml.j2's clone-addons for the rationale) -
+        # this Job needs the same addons content the pool it's initializing
+        # into will run with. The `rm -rf` before `git init` in each
+        # subshell matters defensively, even though this Job's
         # restartPolicy: Never means kubelet never restarts a container
-        # in-place - see pool-deployments.yaml.j2's clone-addons comment
-        # for why a stale /addons must never be what any clone reuses.
-        - name: clone-addons
+        # in-place - see pool-deployments.yaml.j2's clone-addons comment for
+        # why a stale target dir must never be what any clone reuses.
+        #
+        # Each clone runs in its own `( ... )` subshell backgrounded with
+        # `&`; `set -eu` inside a subshell still aborts THAT subshell on its
+        # own first error (subshells inherit shell options from the parent),
+        # so one failing clone doesn't corrupt another's checkout - it just
+        # exits that subshell non-zero. We deliberately still `wait` on
+        # every PID (not exit on the first failure) so a genuinely
+        # unrelated failure (e.g. a bad OCA ref) doesn't hide a SEPARATE,
+        # real one (e.g. the addons deploy key expired) that was running
+        # concurrently - `status` below goes non-zero if ANY subshell
+        # failed, which is what actually fails the initContainer/Job.
+        - name: clone-all-repos
           image: alpine/git:{{ versions.git }}
           command:
             - sh
@@ -58,40 +76,37 @@ spec:
             - >-
               set -eu;
               export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/keys/known_hosts -i /keys/id_ed25519";
-              rm -rf /addons/.git /addons/*;
-              git init -q /addons;
-              cd /addons;
-              git remote add origin {{ odoo.addons_repo_url }};
-              git fetch --depth 1 origin {{ odoo.addons_repo_ref }};
-              git checkout -q FETCH_HEAD
+              ( rm -rf /addons/.git /addons/*;
+                git init -q /addons;
+                cd /addons;
+                git remote add origin {{ odoo.addons_repo_url }};
+                git fetch --depth 1 origin {{ odoo.addons_repo_ref }};
+                git checkout -q FETCH_HEAD ) & pids="$!";
+{% for repo in odoo.oca_repos %}
+              ( rm -rf /oca-{{ repo.name }}/.git /oca-{{ repo.name }}/*;
+                git init -q /oca-{{ repo.name }};
+                cd /oca-{{ repo.name }};
+                git remote add origin {{ repo.url }};
+                git fetch --depth 1 origin {{ repo.ref }};
+                git checkout -q FETCH_HEAD ) & pids="$pids $!";
+{% endfor %}
+              status=0;
+              for pid in $pids; do wait "$pid" || status=1; done;
+              exit "$status"
           volumeMounts:
             - {name: addons-deploy-key, mountPath: /keys, readOnly: true}
             - {name: addons, mountPath: /addons}
-          resources:
-            requests: {cpu: 50m, memory: 64Mi}
-            limits: {cpu: 250m, memory: 256Mi}
-        # Separate, independent clones from each PUBLIC repo in
-        # odoo.oca_repos - see pool-deployments.yaml.j2's identical loop.
 {% for repo in odoo.oca_repos %}
-        - name: clone-oca-{{ repo.name }}
-          image: alpine/git:{{ versions.git }}
-          command:
-            - sh
-            - -c
-            - >-
-              set -eu;
-              rm -rf /oca-{{ repo.name }}/.git /oca-{{ repo.name }}/*;
-              git init -q /oca-{{ repo.name }};
-              cd /oca-{{ repo.name }};
-              git remote add origin {{ repo.url }};
-              git fetch --depth 1 origin {{ repo.ref }};
-              git checkout -q FETCH_HEAD
-          volumeMounts:
             - {name: "oca-{{ repo.name }}", mountPath: "/oca-{{ repo.name }}"}
-          resources:
-            requests: {cpu: 50m, memory: 64Mi}
-            limits: {cpu: 250m, memory: 256Mi}
 {% endfor %}
+          # Sized for {{ 1 + (odoo.oca_repos | length) }} concurrent
+          # `git fetch --depth 1` processes (addons + each oca_repos entry),
+          # not just one - was 50m/64Mi-250m/256Mi per repo when these were
+          # separate containers; combining them means one container's
+          # ceiling now covers all of them running at once.
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
         - name: render-config
           image: busybox:{{ versions.busybox }}
           command:
@@ -161,9 +176,23 @@ spec:
             - {name: "oca-{{ repo.name }}", mountPath: "/opt/oca-{{ repo.name }}", readOnly: true}
 {% endfor %}
             - {name: fs-storage-scripts, mountPath: /scripts, readOnly: true}
+          # cpu bumped from 500m/1 to 1/2 (2026-08-06) - this container runs
+          # 4 full Odoo process boots in sequence (base+storage install,
+          # 2 `odoo shell` scripts, the tenant's real init_modules install -
+          # see this file's own header comment for why these can't be
+          # merged), and asset-bundle compilation in steps 1+3 is CPU-bound.
+          # Flat, NOT plan_spec-driven like pool-deployments.yaml.j2 - 3 of
+          # the 4 steps (everything except the real init_modules install)
+          # do identical work regardless of plan, so tying this to a
+          # tenant's plan would only make the plan-INVARIANT majority of
+          # this Job slower for lower tiers, not faster for higher ones.
+          # Namespace ResourceQuota headroom checked: requests.cpu=16/
+          # limits.cpu=32 (defaults/main/01-deploy-odoo-defaults.yml), and
+          # only one of these Jobs runs at a time (Job Template concurrency
+          # is off - see README "Concurrency") - negligible against either.
           resources:
-            requests: {cpu: 500m, memory: 1Gi}
-            limits: {cpu: "1", memory: 2Gi}
+            requests: {cpu: "1", memory: 1Gi}
+            limits: {cpu: "2", memory: 2Gi}
       volumes:
         - {name: config, configMap: {name: "{{ pool_config_name }}"}}
         - {name: etc-odoo, emptyDir: {}}
