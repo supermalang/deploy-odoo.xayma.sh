@@ -27,11 +27,11 @@
   ansible.builtin.assert:
     that: odoo_action is defined and odoo_action in [
             'deploy', 'start', 'stop', 'suspend', 'restart', 'edit-domain',
-            'change-plan', 'apply-plan', 'change-version', 'delete',
+            'change-plan', 'apply-plan', 'delete',
             'restore', 'backup', 'check-snapshot-freshness']
     fail_msg: >-
       Set -e odoo_action=<one of: deploy|start|stop|suspend|restart|
-      edit-domain|change-plan|apply-plan|change-version|delete|restore|
+      edit-domain|change-plan|apply-plan|delete|restore|
       backup|check-snapshot-freshness>
 
 - name: Run odoo_action=check-snapshot-freshness
@@ -83,10 +83,6 @@
 - name: Run odoo_action=change-plan
   ansible.builtin.import_tasks: change-plan.yml
   when: odoo_action == 'change-plan'
-
-- name: Run odoo_action=change-version
-  ansible.builtin.import_tasks: change-version.yml
-  when: odoo_action == 'change-version'
 
 - name: Run odoo_action=delete
   ansible.builtin.import_tasks: delete-tenant.yml

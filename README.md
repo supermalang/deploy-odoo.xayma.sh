@@ -296,7 +296,6 @@ Actions
 | `edit-domain` | tenant | Change the custom domain, preserving current state |
 | `change-plan` | tenant | Move a tenant to a different plan, same Odoo version only. No data movement |
 | `apply-plan` | **pool** | Resize an existing pool's frozen sizing — affects every tenant on it |
-| `change-version` | tenant | Stub — fails fast, see "Non-goals" |
 | `delete` | tenant | Adhoc backup, drop the DB, purge the filestore prefix + PgBouncer entry, delete every labelled object; scales the pool to 0 if it was the last tenant. The DB drop is immediate; the filestore purge is **not** — see "Backups & Restore" for the 30-day recovery window this leaves |
 | `restore` | tenant | Restore a snapshot (DB only), fenced via REVOKE/terminate |
 | `backup` | tenant | On-demand `pg_dump` → MinIO (DB only) |
@@ -570,9 +569,15 @@ Known caveats
 Non-goals
 ---------
 Deliberately not implemented: email/SMTP (outbound and inbound); a
-dedicated-slice tier; `change-version` migration (stub only); point-in-time
-filestore recovery; per-tenant branded suspend pages; per-tenant Schedules
-for backup iteration (app-driven instead — see "Actions").
+dedicated-slice tier; major-version migration (no `odoo_action` for this at
+all — it needs Odoo's own upgrade tooling against a copied database, not an
+in-place pool reassignment; manual path: take a safety backup
+(`odoo_action=backup`), deploy a NEW tenant on the target version's pool,
+restore a copy of the database into it, run Odoo's own upgrade util,
+validate, then cut DNS/IngressRoute over and `odoo_action=delete` the old
+tenant); point-in-time filestore recovery; per-tenant branded suspend
+pages; per-tenant Schedules for backup iteration (app-driven instead — see
+"Actions").
 
 Custom Odoo image
 --------------------

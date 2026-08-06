@@ -1,11 +1,12 @@
 ---
 # Moves a tenant to a different plan on the SAME Odoo version (assert
-# below; a version change is a stub - see change-version.yml). `plan` is
-# the NEW target plan name (extra_var, slug-validated by _assert-plan.yml
-# in main.yml); `plan_spec`/`plan_spec_json` (optional) is the NEW target's
-# spec, resolved with the same precedence as deploy (see README "Plan
-# resolution"). No data movement: the tenant's database/filestore directory
-# are untouched, only which pool serves them (and its cap/ratelimit) changes.
+# below; a version change is out of scope for this role entirely - see
+# README "Non-goals"). `plan` is the NEW target plan name (extra_var,
+# slug-validated by _assert-plan.yml in main.yml); `plan_spec`/
+# `plan_spec_json` (optional) is the NEW target's spec, resolved with the
+# same precedence as deploy (see README "Plan resolution"). No data
+# movement: the tenant's database/filestore directory are untouched, only
+# which pool serves them (and its cap/ratelimit) changes.
 - name: Recover this tenant's current pool/state from live cluster facts
   ansible.builtin.import_tasks: _recover-tenant.yml
 
@@ -15,8 +16,8 @@
       Moving {{ tenant_name }} from plan={{ tenant_plan }} to plan={{ plan }}
       on odoo{{ tenant_version }} ({{ tenant_pool_id }} -> odoo{{ tenant_version }}-{{ plan }}).
       version is never taken as input for change-plan - a cross-version
-      move is odoo_action=change-version, which is out of scope (see
-      README "Non-goals").
+      move is out of scope for this role entirely (see README
+      "Non-goals").
 
 # `version` is meant to stay pinned to tenant_version below - it is NOT
 # real input for change-plan, ever (see the comment above and README
